@@ -304,11 +304,24 @@ const candleSeries = chart.addCandlestickSeries({
   wickDownColor: '#ef5350',
 });
 
+// ── Anchor 시리즈 ────────────────────────────────────────────
+// 30분 창 양끝에 투명 포인트를 고정해 X축 범위를 보장합니다.
+// autoscaleInfoProvider: () => null → Y축 자동 스케일에서 완전히 제외됩니다.
+const anchorSeries = chart.addLineSeries({
+  color:                 'rgba(0,0,0,0)',
+  lineWidth:             0,
+  crosshairMarkerVisible: false,
+  lastValueVisible:      false,
+  priceLineVisible:      false,
+  autoscaleInfoProvider: () => null,
+});
+
 // ============================================================
 //  30분 고정 타임라인 관리
 // ============================================================
-let periodStart = null;   // Date
-let periodEnd   = null;   // Date
+let periodStart  = null;   // Date
+let periodEnd    = null;   // Date
+let _rangeFixed  = false;  // setVisibleRange가 실제로 적용됐는지 여부
 
 function calcPeriod(now) {
   const m = now.getMinutes();
@@ -324,18 +337,35 @@ function calcPeriod(now) {
   return { start: s, end: e };
 }
 
-function applyFixedTimeline(start, end) {
-  const fromTs = toChartTime(start.getTime());
-  const toTs   = toChartTime(end.getTime());
-  // 데이터가 있을 때만 range 강제 적용 (빈 차트에서 호출 시 에러 방지)
-  try {
-    chart.timeScale().setVisibleRange({ from: fromTs, to: toTs });
-  } catch (_) {}
+/**
+ * Anchor 시리즈에 현재 가격으로 30분 창 양끝 포인트를 심습니다.
+ * 첫 호출 시 setVisibleRange를 한 번 확정 적용합니다.
+ */
+function refreshAnchor(price) {
+  if (!periodStart || !periodEnd || price <= 0) return;
+  const fromTs = toChartTime(periodStart.getTime());
+  const toTs   = toChartTime(periodEnd.getTime());
+  // 현재가와 동일한 값이므로 Y축에는 실질적 영향 없음
+  anchorSeries.setData([
+    { time: fromTs, value: price },
+    { time: toTs,   value: price },
+  ]);
+  // 아직 range가 확정 적용되지 않았으면 지금 적용
+  if (!_rangeFixed) {
+    try {
+      chart.timeScale().setVisibleRange({ from: fromTs, to: toTs });
+      _rangeFixed = true;
+    } catch (_) {}
+  }
+}
 
+function applyFixedTimeline(start, end) {
   const startStr = `${pad(start.getHours())}:${pad(start.getMinutes())}`;
   const endStr   = `${pad(end.getHours())}:${pad(end.getMinutes())}`;
   document.getElementById('lbl-period').textContent =
     `현재 구간: ${startStr} ~ ${endStr}`;
+  // 가격이 이미 있으면 anchor 즉시 갱신, 없으면 첫 캔들 수신 시 자동 갱신
+  if (lastClose) refreshAnchor(lastClose);
 }
 
 // ============================================================
@@ -354,17 +384,19 @@ function resetChart() {
   });
   predictionSeriesList = [];
 
-  // 캔들 데이터 초기화
+  // 캔들 & anchor 초기화
   candleSeries.setData([]);
+  anchorSeries.setData([]);
   candleCount  = 0;
   lastCandleTs = 0;
   periodOpen   = null;
+  _rangeFixed  = false;   // 새 구간이므로 range 재확정 필요
   document.getElementById('stat-candles').textContent = '0';
   document.getElementById('stat-preds').textContent   = '0';
   document.getElementById('stat-change').textContent  = '--';
   document.getElementById('stat-change').className    = 'stat-value';
 
-  // 새 구간 타임라인 적용
+  // 새 구간 타임라인 설정
   const { start, end } = calcPeriod(new Date());
   periodStart = start;
   periodEnd   = end;
@@ -569,6 +601,9 @@ function connectWS() {
       const el = document.getElementById('stat-change');
       el.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(3)}%`;
       el.className   = `stat-value ${change >= 0 ? 'up' : 'down'}`;
+
+      // X축 30분 고정 앵커 갱신 (아직 미적용 상태라면 이 시점에 확정 적용)
+      refreshAnchor(c.close);
     }
 
     // ── 예측 궤적 오버레이 (절대 삭제하지 않음) ───────
@@ -606,8 +641,8 @@ function connectWS() {
       predictionSeriesList.push(predSeries);
       document.getElementById('stat-preds').textContent = predictionSeriesList.length;
 
-      // 예측선 추가 후 타임라인 고정 재적용
-      applyFixedTimeline(periodStart, periodEnd);
+      // 예측선이 30분 창 밖으로 나가지 않도록 range 재확인
+      if (lastClose) refreshAnchor(lastClose);
     }
   };
 }
