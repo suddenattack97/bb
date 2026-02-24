@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BTC/USDT 1분봉 적중률 검증 차트</title>
+
+  <!-- Lightweight Charts v4 (standalone) -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px 18px;
+    }
+
+    /* ── 헤더 패널 ── */
+    #header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 12px 18px;
+    }
+    #header h1 { font-size: 1rem; font-weight: 600; color: #e6edf3; }
+
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 0.82rem;
+      color: #8b949e;
+    }
+    .meta-row span { white-space: nowrap; }
+    .meta-row strong { color: #c9d1d9; }
+
+    /* 웹소켓 상태 도트 */
+    #ws-dot {
+      display: inline-block;
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #6e7681;
+      margin-right: 4px;
+      vertical-align: middle;
+      transition: background 0.3s;
+    }
+    #ws-dot.connected    { background: #3fb950; box-shadow: 0 0 6px #3fb95088; }
+    #ws-dot.connecting   { background: #d29922; }
+    #ws-dot.disconnected { background: #f85149; }
+
+    /* ── 버튼 그룹 ── */
+    .btn-group { display: flex; gap: 8px; }
+    button {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    #btn-snapshot { background: #2962ff; color: #fff; }
+    #btn-reset    { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+
+    /* ── 차트 영역 ── */
+    #chart-wrapper {
+      position: relative;
+      background: #131722;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+      flex: 1;
+      min-height: 460px;
+    }
+    #chart-container { width: 100%; height: 100%; min-height: 460px; }
+
+    /* 차트 위 오버레이 메시지 (초기 연결 대기 등) */
+    #chart-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(19,23,34,0.7);
+      font-size: 1rem;
+      color: #8b949e;
+      pointer-events: none;
+      transition: opacity 0.4s;
+    }
+    #chart-overlay.hidden { opacity: 0; }
+
+    /* ── 통계 바 ── */
+    #stats-bar {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 0.82rem;
+    }
+    .stat-item { display: flex; flex-direction: column; gap: 2px; }
+    .stat-label { color: #8b949e; font-size: 0.73rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat-value { color: #e6edf3; font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .stat-value.up   { color: #3fb950; }
+    .stat-value.down { color: #f85149; }
+
+    /* ── 스냅샷 갤러리 ── */
+    #gallery {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 12px 18px;
+    }
+    #gallery h3 { font-size: 0.85rem; color: #8b949e; margin-bottom: 10px; }
+    #snapshot-list {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .snap-thumb {
+      position: relative;
+      cursor: pointer;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      overflow: hidden;
+      transition: border-color 0.15s;
+    }
+    .snap-thumb:hover { border-color: #58a6ff; }
+    .snap-thumb img  { display: block; width: 160px; height: 80px; object-fit: cover; }
+    .snap-thumb span {
+      display: block;
+      text-align: center;
+      font-size: 0.65rem;
+      color: #8b949e;
+      padding: 3px 4px;
+      background: #0d1117;
+    }
+
+    /* ── 전체화면 스냅샷 뷰어 ── */
+    #viewer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    #viewer-overlay.visible { display: flex; }
+    #viewer-overlay img {
+      max-width: 95vw;
+      max-height: 90vh;
+      border-radius: 8px;
+      box-shadow: 0 0 40px rgba(0,0,0,0.8);
+    }
+    #viewer-close {
+      position: absolute;
+      top: 18px; right: 22px;
+      color: #fff;
+      font-size: 1.6rem;
+      cursor: pointer;
+      line-height: 1;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ① 헤더 패널 -->
+<div id="header">
+  <div>
+    <h1>🎯 BTC/USDT 1분봉 &nbsp;적중률 검증 차트</h1>
+    <div class="meta-row" style="margin-top:6px;">
+      <span><strong id="lbl-period">계산 중...</strong></span>
+      <span>현재: <strong id="lbl-time">--:--</strong></span>
+      <span><span id="ws-dot"></span><span id="lbl-ws">연결 중...</span></span>
+    </div>
+  </div>
+  <div class="btn-group">
+    <button id="btn-snapshot">📷 수동 스냅샷</button>
+    <button id="btn-reset">🔄 차트 초기화</button>
+  </div>
+</div>
+
+<!-- ② 차트 -->
+<div id="chart-wrapper">
+  <div id="chart-container"></div>
+  <div id="chart-overlay">⏳ Binance WebSocket 연결 대기 중...</div>
+</div>
+
+<!-- ③ 통계 바 -->
+<div id="stats-bar">
+  <div class="stat-item">
+    <span class="stat-label">현재가</span>
+    <span class="stat-value" id="stat-price">--</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">누적 캔들</span>
+    <span class="stat-value" id="stat-candles">0</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">예측 궤적</span>
+    <span class="stat-value" id="stat-preds">0</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">구간 변화</span>
+    <span class="stat-value" id="stat-change">--</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">다음 스냅샷까지</span>
+    <span class="stat-value" id="stat-countdown">--</span>
+  </div>
+</div>
+
+<!-- ④ 스냅샷 갤러리 -->
+<div id="gallery">
+  <h3>📂 스냅샷 히스토리</h3>
+  <div id="snapshot-list"><span style="color:#6e7681;font-size:.8rem;">저장된 스냅샷이 없습니다.</span></div>
+</div>
+
+<!-- ⑤ 스냅샷 뷰어 -->
+<div id="viewer-overlay">
+  <span id="viewer-close">✕</span>
+  <img id="viewer-img" src="" alt="snapshot" />
+</div>
+
+<script>
+// ============================================================
+//  유틸리티
+// ============================================================
+const pad  = n => String(n).padStart(2, '0');
+const fmt  = n => n.toLocaleString('ko-KR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Lightweight Charts는 타임스탬프를 UTC로 해석합니다.
+ * 로컬 시간으로 표시하려면 UTC 타임스탬프에 로컬 오프셋을 더합니다.
+ * 예) KST(+9h): UTC초 + 32400 → 차트에 로컬 시각으로 표시
+ */
+const TZ_OFFSET_S = new Date().getTimezoneOffset() * -60;
+function toChartTime(ms) {
+  return Math.floor(ms / 1000) + TZ_OFFSET_S;
+}
+
+// ============================================================
+//  차트 생성
+// ============================================================
+const chartContainer = document.getElementById('chart-container');
+const chart = LightweightCharts.createChart(chartContainer, {
+  layout: {
+    background: { type: 'solid', color: '#131722' },
+    textColor: '#d1d4dc',
+  },
+  grid: {
+    vertLines: { color: '#1e2130' },
+    horzLines: { color: '#1e2130' },
+  },
+  timeScale: {
+    timeVisible: true,
+    secondsVisible: false,
+    fixLeftEdge: true,
+    fixRightEdge: true,
+    borderColor: '#2b2b43',
+  },
+  rightPriceScale: {
+    autoScale: true,
+    borderColor: '#2b2b43',
+  },
+  crosshair: {
+    mode: LightweightCharts.CrosshairMode.Normal,
+  },
+  handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false },
+  handleScale:  { mouseWheel: false, pinch: false, axisPressedMouseMove: false },
+});
+
+// 창 크기에 맞게 차트 자동 조절
+const resizeObserver = new ResizeObserver(() => {
+  chart.applyOptions({
+    width:  chartContainer.clientWidth,
+    height: chartContainer.clientHeight,
+  });
+});
+resizeObserver.observe(chartContainer);
+
+// 캔들스틱 시리즈 (실제 1분봉)
+const candleSeries = chart.addCandlestickSeries({
+  upColor:       '#26a69a',
+  downColor:     '#ef5350',
+  borderVisible: false,
+  wickUpColor:   '#26a69a',
+  wickDownColor: '#ef5350',
+});
+
+// ============================================================
+//  30분 고정 타임라인 관리
+// ============================================================
+let periodStart = null;   // Date
+let periodEnd   = null;   // Date
+
+function calcPeriod(now) {
+  const m = now.getMinutes();
+  const startMin = m < 30 ? 0 : 30;
+
+  const s = new Date(now);
+  s.setMinutes(startMin, 0, 0);
+  s.setMilliseconds(0);
+
+  const e = new Date(s);
+  e.setMinutes(startMin + 30, 0, 0);   // JS Date가 60분 넘으면 자동으로 시간 올림
+
+  return { start: s, end: e };
+}
+
+function applyFixedTimeline(start, end) {
+  const fromTs = toChartTime(start.getTime());
+  const toTs   = toChartTime(end.getTime());
+  // 데이터가 있을 때만 range 강제 적용 (빈 차트에서 호출 시 에러 방지)
+  try {
+    chart.timeScale().setVisibleRange({ from: fromTs, to: toTs });
+  } catch (_) {}
+
+  const startStr = `${pad(start.getHours())}:${pad(start.getMinutes())}`;
+  const endStr   = `${pad(end.getHours())}:${pad(end.getMinutes())}`;
+  document.getElementById('lbl-period').textContent =
+    `현재 구간: ${startStr} ~ ${endStr}`;
+}
+
+// ============================================================
+//  차트 상태
+// ============================================================
+let predictionSeriesList = [];   // 누적 예측 LineSeries 목록
+let candleCount   = 0;
+let lastCandleTs  = 0;           // 마지막으로 카운트한 캔들의 timestamp (중복 방지)
+let periodOpen    = null;        // 구간 첫 번째 캔들 시가 (변화율 계산용)
+let lastClose     = null;
+
+function resetChart() {
+  // 모든 예측 시리즈 제거
+  predictionSeriesList.forEach(s => {
+    try { chart.removeSeries(s); } catch (_) {}
+  });
+  predictionSeriesList = [];
+
+  // 캔들 데이터 초기화
+  candleSeries.setData([]);
+  candleCount  = 0;
+  lastCandleTs = 0;
+  periodOpen   = null;
+  document.getElementById('stat-candles').textContent = '0';
+  document.getElementById('stat-preds').textContent   = '0';
+  document.getElementById('stat-change').textContent  = '--';
+  document.getElementById('stat-change').className    = 'stat-value';
+
+  // 새 구간 타임라인 적용
+  const { start, end } = calcPeriod(new Date());
+  periodStart = start;
+  periodEnd   = end;
+  applyFixedTimeline(start, end);
+}
+
+// 초기화
+resetChart();
+
+// ============================================================
+//  스냅샷
+// ============================================================
+function makePeriodFilename(start, end) {
+  const dateStr  = `${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}`;
+  const startStr = `${pad(start.getHours())}${pad(start.getMinutes())}`;
+  const endStr   = `${pad(end.getHours())}${pad(end.getMinutes())}`;
+  return `${dateStr}_${startStr}_${endStr}.png`;
+}
+
+async function captureAndSend(filename) {
+  let dataURL = null;
+  try {
+    const canvas = chart.takeScreenshot();
+    if (canvas && typeof canvas.toDataURL === 'function') {
+      dataURL = canvas.toDataURL('image/png');
+    }
+  } catch (_) {}
+
+  if (!dataURL) {
+    // fallback: DOM에서 캔버스 직접 탐색
+    const canvas = chartContainer.querySelector('canvas');
+    if (canvas) dataURL = canvas.toDataURL('image/png');
+  }
+  if (!dataURL) { console.warn('스냅샷 캔버스를 찾을 수 없습니다.'); return; }
+
+  try {
+    const res = await fetch('/save_snapshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: dataURL, filename }),
+    });
+    const json = await res.json();
+    console.log('📸 스냅샷 저장:', json.filename, `(${(json.size/1024).toFixed(1)} KB)`);
+    loadSnapshotGallery();
+  } catch (e) {
+    console.error('스냅샷 전송 실패:', e);
+  }
+}
+
+async function takeSnapshotAndReset() {
+  const filename = makePeriodFilename(periodStart, periodEnd);
+  await captureAndSend(filename);
+  resetChart();
+}
+
+document.getElementById('btn-snapshot').addEventListener('click', takeSnapshotAndReset);
+document.getElementById('btn-reset').addEventListener('click', resetChart);
+
+// ============================================================
+//  갤러리
+// ============================================================
+async function loadSnapshotGallery() {
+  try {
+    const res  = await fetch('/snapshots');
+    const data = await res.json();
+    const list = document.getElementById('snapshot-list');
+    if (!data.snapshots || data.snapshots.length === 0) {
+      list.innerHTML = '<span style="color:#6e7681;font-size:.8rem;">저장된 스냅샷이 없습니다.</span>';
+      return;
+    }
+    list.innerHTML = '';
+    data.snapshots.forEach(name => {
+      const thumb = document.createElement('div');
+      thumb.className = 'snap-thumb';
+      thumb.title = name;
+      thumb.innerHTML = `<img src="/snapshots/${name}" alt="${name}" loading="lazy"><span>${name.replace('.png','')}</span>`;
+      thumb.addEventListener('click', () => openViewer(`/snapshots/${name}`));
+      list.appendChild(thumb);
+    });
+  } catch (_) {}
+}
+
+function openViewer(src) {
+  const ov = document.getElementById('viewer-overlay');
+  document.getElementById('viewer-img').src = src;
+  ov.classList.add('visible');
+}
+document.getElementById('viewer-close').addEventListener('click', () => {
+  document.getElementById('viewer-overlay').classList.remove('visible');
+});
+document.getElementById('viewer-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('visible');
+});
+
+loadSnapshotGallery();
+
+// ============================================================
+//  UI 타이머 (1초마다 시각 + 카운트다운 갱신)
+// ============================================================
+function updateUI() {
+  const now = new Date();
+  document.getElementById('lbl-time').textContent =
+    `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+  if (periodEnd) {
+    const remainMs = periodEnd.getTime() - now.getTime();
+    if (remainMs > 0) {
+      const mm = Math.floor(remainMs / 60000);
+      const ss = Math.floor((remainMs % 60000) / 1000);
+      document.getElementById('stat-countdown').textContent = `${pad(mm)}:${pad(ss)}`;
+    } else {
+      document.getElementById('stat-countdown').textContent = '00:00';
+    }
+  }
+}
+setInterval(updateUI, 1000);
+updateUI();
+
+// ============================================================
+//  WebSocket 연결 (자동 재연결 포함)
+// ============================================================
+let ws = null;
+let wsRetryDelay = 2000;
+let firstCandleReceived = false;
+
+function setWsStatus(status, text) {
+  const dot = document.getElementById('ws-dot');
+  const lbl = document.getElementById('lbl-ws');
+  dot.className = status;
+  lbl.textContent = text;
+}
+
+function connectWS() {
+  setWsStatus('connecting', '연결 중...');
+  ws = new WebSocket(`ws://${location.host}/ws`);
+
+  ws.onopen = () => {
+    setWsStatus('connected', '연결됨 🟢');
+    wsRetryDelay = 2000;
+    console.log('✅ WebSocket 연결');
+  };
+
+  ws.onclose = () => {
+    setWsStatus('disconnected', `재연결 중... (${wsRetryDelay/1000}s)`);
+    console.warn(`WebSocket 닫힘, ${wsRetryDelay}ms 후 재연결`);
+    setTimeout(connectWS, wsRetryDelay);
+    wsRetryDelay = Math.min(wsRetryDelay * 2, 30000);
+  };
+
+  ws.onerror = err => {
+    console.error('WebSocket 오류:', err);
+  };
+
+  ws.onmessage = (event) => {
+    let data;
+    try { data = JSON.parse(event.data); }
+    catch (_) { return; }
+
+    const now = new Date();
+
+    // 오버레이 숨김
+    if (!firstCandleReceived) {
+      firstCandleReceived = true;
+      const ov = document.getElementById('chart-overlay');
+      ov.classList.add('hidden');
+    }
+
+    // ── 30분 구간 경계 체크 ──────────────────────────
+    if (periodEnd && now >= periodEnd) {
+      console.log('⏰ 30분 구간 종료 → 스냅샷 + 초기화');
+      takeSnapshotAndReset();
+      return;  // resetChart 내부에서 periodEnd 갱신됨
+    }
+
+    // ── 실시간 캔들 렌더링 ────────────────────────────
+    if (data.type === 'real_time_candle') {
+      const c = data.candle;
+      const chartCandle = {
+        time:  toChartTime(c.time * 1000),
+        open:  c.open,
+        high:  c.high,
+        low:   c.low,
+        close: c.close,
+      };
+
+      candleSeries.update(chartCandle);
+      lastClose = c.close;
+
+      // 구간 첫 캔들의 open 저장
+      if (periodOpen === null) periodOpen = c.open;
+
+      // 새로운 타임스탬프(새 캔들 시작)일 때만 캔들 카운트 증가
+      if (chartCandle.time !== lastCandleTs) {
+        lastCandleTs = chartCandle.time;
+        candleCount++;
+        document.getElementById('stat-candles').textContent = candleCount;
+      }
+
+      // 현재가 & 구간 변화율
+      document.getElementById('stat-price').textContent = fmt(c.close);
+      const change = periodOpen ? ((c.close - periodOpen) / periodOpen * 100) : 0;
+      const el = document.getElementById('stat-change');
+      el.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(3)}%`;
+      el.className   = `stat-value ${change >= 0 ? 'up' : 'down'}`;
+    }
+
+    // ── 예측 궤적 오버레이 (절대 삭제하지 않음) ───────
+    if (data.type === 'prediction' && Array.isArray(data.predictions)) {
+
+      // 색상: 같은 구간 내에서 회색→파란색으로 그라데이션 (최대 30개)
+      const alpha = 0.25 + Math.min(predictionSeriesList.length / 30, 0.5) * 0.5;
+      const hue   = 210 + (predictionSeriesList.length % 30) * 2;
+
+      const predSeries = chart.addLineSeries({
+        color:                  `hsla(${hue}, 90%, 65%, ${alpha.toFixed(2)})`,
+        lineWidth:              2,
+        lineStyle:              LightweightCharts.LineStyle.Dashed,
+        crosshairMarkerVisible: false,
+        lastValueVisible:       false,
+        priceLineVisible:       false,
+        autoscaleInfoProvider:  () => null,  // 예측선이 Y축 스케일에 영향 최소화
+      });
+
+      const points = data.predictions.map(p => ({
+        time:  toChartTime(p.time * 1000),
+        value: p.value,
+      }));
+
+      // 예측 궤적의 시작점을 현재 캔들 종가에 연결
+      if (lastClose !== null && points.length > 0) {
+        const originTime = data.origin_time
+          ? toChartTime(data.origin_time * 1000)
+          : points[0].time - 60;
+        predSeries.setData([{ time: originTime, value: lastClose }, ...points]);
+      } else {
+        predSeries.setData(points);
+      }
+
+      predictionSeriesList.push(predSeries);
+      document.getElementById('stat-preds').textContent = predictionSeriesList.length;
+
+      // 예측선 추가 후 타임라인 고정 재적용
+      applyFixedTimeline(periodStart, periodEnd);
+    }
+  };
+}
+
+connectWS();
+</script>
+</body>
+</html>
