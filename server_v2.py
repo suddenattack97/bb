@@ -14,6 +14,7 @@ import json
 import ssl
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -74,6 +75,8 @@ BINANCE_WS_URLS = [
     "wss://data-stream.binance.vision/ws/btcusdt@kline_1m",
 ]
 POLL_INTERVAL_S = 5
+FUTURES_POLL_INTERVAL_S = 60  # OI/Funding 60초마다 갱신
+BINANCE_SYMBOL = "BTC/USDT"
 MAX_CANDLE_BUFFER = 60
 PRED_STEPS = 5
 SNAPSHOT_DIR = Path("snapshots")
@@ -182,10 +185,46 @@ candle_buffer = []
 _prev_candle_ts = 0
 _last_pred_debug = {}
 
+# 선물 OI / Funding Rate (실시간 예측용, 학습 시 사용한 피처와 동일하게)
+_futures_oi: float = 0.0
+_futures_oi_prev: float = 0.0
+_funding_rate: float = 0.0
+_futures_last_fetch: float = 0.0
+
 _model = None
 _scaler_mean = None
 _scaler_std = None
 _feature_names = None
+_use_oi_funding = False  # 학습 시 OI/Funding 사용했을 때만 예측에 반영
+
+
+# ─── 선물 OI / Funding 실시간 수집 ─────────────────────────────────────
+def _fetch_futures_data_sync():
+    """Binance 선물 OI, Funding Rate 동기 수집 (스레드/Executor용)"""
+    global _futures_oi, _futures_oi_prev, _funding_rate, _futures_last_fetch
+    try:
+        ex = ccxt.binanceusdm() if hasattr(ccxt, "binanceusdm") else ccxt.binance({"options": {"defaultType": "future"}})
+        oi = ex.fetch_open_interest(BINANCE_SYMBOL)
+        fr = ex.fetch_funding_rate(BINANCE_SYMBOL)
+        oi_val = float(oi.get("openInterestValue", oi.get("openInterest", 0)) or 0)
+        fr_val = float(fr.get("fundingRate", 0) or 0)
+        if _futures_oi == 0 and _futures_oi_prev == 0:
+            _futures_oi = _futures_oi_prev = oi_val  # 최초: 변화율 0
+        else:
+            _futures_oi_prev = _futures_oi
+            _futures_oi = oi_val
+        _funding_rate = fr_val
+        _futures_last_fetch = time.time()
+    except Exception as e:
+        print(f"[V2] 선물 데이터 수집 실패: {e}")
+
+
+async def _futures_poll_loop():
+    """백그라운드: 60초마다 OI/Funding 갱신"""
+    loop = asyncio.get_event_loop()
+    while True:
+        await loop.run_in_executor(None, _fetch_futures_data_sync)
+        await asyncio.sleep(FUTURES_POLL_INTERVAL_S)
 
 
 # ─── Heikin-Ashi & V2 피처 (실시간) ─────────────────────────────────────
@@ -241,8 +280,14 @@ def _compute_v2_features(buf: list) -> Optional[np.ndarray]:
     atr = np.where(np.isnan(atr) | (atr < 1e-8), 0.005, atr)
     directional_vol = (ha_c - ha_o) * volumes
     cvd_proxy = pd.Series(directional_vol).rolling(20).sum().fillna(0).values / (pd.Series(volumes).rolling(20).sum().fillna(1).values + 1e-8)
-    oi_change = np.zeros(len(ha_c))
-    funding = np.zeros(len(ha_c))
+    # OI/Funding: 학습 시 사용했을 때만 실시간값 적용 (미사용 시 0 → train/serve 일치)
+    if _use_oi_funding:
+        oi_ch = (_futures_oi - _futures_oi_prev) / (_futures_oi_prev + 1e-10) if _futures_oi_prev > 0 else 0.0
+        oi_change = np.full(len(ha_c), oi_ch, dtype=np.float64)
+        funding = np.full(len(ha_c), _funding_rate, dtype=np.float64)
+    else:
+        oi_change = np.zeros(len(ha_c), dtype=np.float64)
+        funding = np.zeros(len(ha_c), dtype=np.float64)
 
     feat_cols = ["log_return", "volatility", "rsi_14", "vwap", "volume", "bb_width", "bb_position", "atr_14", "cvd_proxy", "oi_change", "funding_rate"]
     feats = np.stack([
@@ -253,7 +298,7 @@ def _compute_v2_features(buf: list) -> Optional[np.ndarray]:
 
 
 def _load_model():
-    global _model, _scaler_mean, _scaler_std, _feature_names
+    global _model, _scaler_mean, _scaler_std, _feature_names, _use_oi_funding
     if not TORCH_AVAILABLE:
         print("[V2] PyTorch 없음 → fallback")
         return
@@ -266,6 +311,7 @@ def _load_model():
         sc = np.load(str(sp), allow_pickle=True).item()
         nf = int(sc.get("num_features", 11))
         _feature_names = sc.get("feature_names", [])
+        _use_oi_funding = sc.get("use_oi_funding", False)  # 구버전 scaler 호환
         _model = TCNClassifier(num_features=nf, num_classes=3)
         _model.load_state_dict(torch.load(str(mp), map_location="cpu"))
         _model.eval()
@@ -484,6 +530,7 @@ async def _binance_feed():
 @app.on_event("startup")
 async def _startup():
     asyncio.create_task(_binance_feed())
+    asyncio.create_task(_futures_poll_loop())  # OI/Funding 주기적 수집
 
 
 @app.websocket("/ws")

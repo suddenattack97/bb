@@ -254,15 +254,33 @@ class TripleBarrierDataset(Dataset):
 #  학습
 # ─────────────────────────────────────────────
 def train_v2(
-    csv_file: str = "BTC_all_1m.csv",
+    csv_file: str = None,
+    oi_csv: str = "BTC_futures_oi.csv",
+    funding_csv: str = "BTC_funding_rate.csv",
     epochs: int = 5,
     barrier_minutes: int = 5,
 ):
+    from pathlib import Path
+    # 현물 OHLCV: fetch_data_v2는 BTC_all_1m_v2.csv, fetch_data는 BTC_all_1m.csv
+    if csv_file is None:
+        csv_file = "BTC_all_1m_v2.csv" if Path("BTC_all_1m_v2.csv").exists() else "BTC_all_1m.csv"
+
+    # OI/Funding 파일 있으면 자동 병합
+    use_oi = Path(oi_csv).exists()
+    use_funding = Path(funding_csv).exists()
+    if use_oi:
+        _log(f"OI 피처 사용: {oi_csv}")
+    if use_funding:
+        _log(f"Funding 피처 사용: {funding_csv}")
+
     dataset = TripleBarrierDataset(
         csv_file,
         seq_len=60,
         barrier_minutes=barrier_minutes,
         use_heikin_ashi=True,
+        use_oi_funding=(use_oi or use_funding),
+        oi_csv=oi_csv if use_oi else None,
+        funding_csv=funding_csv if use_funding else None,
     )
     num_features = len(dataset.feature_names)
 
@@ -309,6 +327,7 @@ def train_v2(
         "std": dataset.std,
         "num_features": num_features,
         "feature_names": dataset.feature_names,
+        "use_oi_funding": use_oi or use_funding,  # 예측 시 OI/Funding 사용 여부
     })
     _log("🎉 V2 모델 저장 완료: tcn_v2_model.pth, scaler_v2.npy")
 

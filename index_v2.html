@@ -234,6 +234,10 @@
     <span class="stat-value" id="stat-direction">--</span>
   </div>
   <div class="stat-item">
+    <span class="stat-label">확신도</span>
+    <span class="stat-value" id="stat-confidence">--</span>
+  </div>
+  <div class="stat-item">
     <span class="stat-label">누적 캔들</span>
     <span class="stat-value" id="stat-candles">0</span>
   </div>
@@ -372,6 +376,7 @@ function resetChart() {
   document.getElementById('stat-preds').textContent = '0';
   document.getElementById('stat-direction').textContent = '--';
   document.getElementById('stat-direction').className = 'stat-value';
+  document.getElementById('stat-confidence').textContent = '--';
   document.getElementById('stat-change').textContent = '--';
   document.getElementById('stat-change').className = 'stat-value';
   periodIsPast = false;
@@ -502,7 +507,8 @@ function setWsStatus(status, text) {
 
 function connectWS() {
   setWsStatus('connecting', '연결 중...');
-  ws = new WebSocket(`ws://${location.host}/ws`);
+  const wsProto = (location.protocol === 'https:' ? 'wss:' : 'ws:');
+  ws = new WebSocket(`${wsProto}//${location.host}/ws`);
   ws.onopen = () => { setWsStatus('connected', '연결됨 🟢'); wsRetryDelay = 2000; };
   ws.onclose = () => {
     setWsStatus('disconnected', `재연결 중... (${wsRetryDelay/1000}s)`);
@@ -580,10 +586,13 @@ function connectWS() {
         predictionSeriesList.push(predSeries);
         lastPredictionEndTs = points[points.length - 1].time;
         const dir = entry.direction;
+        const conf = entry.confidence;
         if (dir !== undefined) {
-          const dirEl = document.getElementById('stat-direction');
-          dirEl.textContent = dirLabel(dir);
-          dirEl.className = `stat-value ${dir === 2 ? 'up' : dir === 0 ? 'down' : ''}`;
+          document.getElementById('stat-direction').textContent = dirLabel(dir);
+          document.getElementById('stat-direction').className = `stat-value ${dir === 2 ? 'up' : dir === 0 ? 'down' : ''}`;
+        }
+        if (conf !== undefined) {
+          document.getElementById('stat-confidence').textContent = `${(conf * 100).toFixed(1)}%`;
         }
       });
       document.getElementById('stat-preds').textContent = String(predictionSeriesList.length);
@@ -632,10 +641,13 @@ function connectWS() {
       const baseColor = colors[predictionSeriesList.length % colors.length];
       const originTime = data.origin_time ? toChartTime(data.origin_time * 1000) : points[0].time - 60;
       const dir = data.predictions[0].direction;
+      const conf = data.predictions[0].confidence;
       if (dir !== undefined) {
-        const dirEl = document.getElementById('stat-direction');
-        dirEl.textContent = dirLabel(dir);
-        dirEl.className = `stat-value ${dir === 2 ? 'up' : dir === 0 ? 'down' : ''}`;
+        document.getElementById('stat-direction').textContent = dirLabel(dir);
+        document.getElementById('stat-direction').className = `stat-value ${dir === 2 ? 'up' : dir === 0 ? 'down' : ''}`;
+      }
+      if (conf !== undefined) {
+        document.getElementById('stat-confidence').textContent = `${(conf * 100).toFixed(1)}%`;
       }
       const hasRange = points.some(p => p.lower != null && p.upper != null);
       if (hasRange) {

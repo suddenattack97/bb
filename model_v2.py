@@ -7,6 +7,7 @@ import numpy as np
 try:
     import torch
     import torch.nn as nn
+    _weight_norm = getattr(nn.utils.parametrizations, "weight_norm", nn.utils.weight_norm)
 
     class Chomp1d(nn.Module):
         def __init__(self, chomp_size: int):
@@ -20,7 +21,7 @@ try:
         def __init__(self, n_inputs: int, n_outputs: int, kernel_size: int,
                      stride: int, dilation: int, padding: int, dropout: float = 0.2):
             super().__init__()
-            self.conv1 = nn.utils.weight_norm(
+            self.conv1 = _weight_norm(
                 nn.Conv1d(n_inputs, n_outputs, kernel_size,
                           stride=stride, padding=padding, dilation=dilation)
             )
@@ -28,7 +29,7 @@ try:
             self.relu1 = nn.ReLU()
             self.dropout1 = nn.Dropout(dropout)
 
-            self.conv2 = nn.utils.weight_norm(
+            self.conv2 = _weight_norm(
                 nn.Conv1d(n_outputs, n_outputs, kernel_size,
                           stride=stride, padding=padding, dilation=dilation)
             )

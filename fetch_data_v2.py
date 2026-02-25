@@ -15,7 +15,7 @@ from datetime import datetime
 
 BINANCE_FUTURES = "binanceusdm"  # USDT-M 선물
 SYMBOL = "BTC/USDT"
-SPOT_CSV = "BTC_all_1m.csv"
+SPOT_CSV = "BTC_all_1m_v2.csv"
 OI_CSV = "BTC_futures_oi.csv"
 FUNDING_CSV = "BTC_funding_rate.csv"
 
@@ -85,6 +85,7 @@ def fetch_open_interest():
             break
     if all_data:
         df = pd.DataFrame(all_data).set_index("timestamp").sort_index()
+        df.columns = ["value"]  # train_initial_v2 iloc[:,0] 호환
         df.to_csv(OI_CSV)
         print(f"✅ 선물 OI 저장: {OI_CSV}")
     else:
@@ -123,6 +124,7 @@ def fetch_funding_rate():
             break
     if all_data:
         df = pd.DataFrame(all_data).set_index("timestamp").sort_index()
+        df.columns = ["value"]  # train_initial_v2 iloc[:,0] 호환
         df.to_csv(FUNDING_CSV)
         print(f"✅ Funding Rate 저장: {FUNDING_CSV}")
     else:
