@@ -13,9 +13,11 @@ Binance 연결 전략 (순서대로 시도):
 """
 import asyncio
 import base64
+import io
 import json
 import ssl
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -27,6 +29,47 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except AttributeError:
         pass
+
+# ─────────────────────────────────────────────
+#  로그 파일 Tee (stdout/stderr → 콘솔 + txt 파일)
+# ─────────────────────────────────────────────
+LOG_DIR = Path("data/logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "server.txt"
+_tee_lock = threading.Lock()
+
+
+class TeeWriter(io.TextIOBase):
+    """콘솔과 로그 파일에 동시 출력"""
+
+    def __init__(self, stream, name: str):
+        self._stream = stream
+        self._name = name
+
+    def write(self, data: str) -> int:
+        if data:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            line = f"[{ts}] [{self._name}] {data.rstrip()}\n"
+            with _tee_lock:
+                try:
+                    with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as f:
+                        f.write(line)
+                        f.flush()
+                except Exception:
+                    pass
+        return self._stream.write(data)
+
+    def flush(self):
+        self._stream.flush()
+
+    def isatty(self):
+        return self._stream.isatty()
+
+
+_sys_stdout = sys.stdout
+_sys_stderr = sys.stderr
+sys.stdout = TeeWriter(_sys_stdout, "OUT")
+sys.stderr = TeeWriter(_sys_stderr, "ERR")
 
 import ccxt
 import numpy as np
@@ -50,8 +93,10 @@ MAX_CANDLE_BUFFER = 60
 PRED_STEPS        = 5
 SNAPSHOT_DIR      = Path("snapshots")
 CANDLES_DIR       = Path("data/candles")
+PREDICTIONS_DIR   = Path("data/predictions")
 SNAPSHOT_DIR.mkdir(exist_ok=True)
 CANDLES_DIR.mkdir(parents=True, exist_ok=True)
+PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _candles_file_for_ts(ts: int) -> Path:
@@ -63,14 +108,32 @@ def _candles_file_for_ts(ts: int) -> Path:
 def _load_hour_candles(ts: int) -> list[dict]:
     """해당 시간대(ts가 포함된 시)의 분봉 목록 로드. 없으면 []."""
     p = _candles_file_for_ts(ts)
-    if not p.exists():
-        return []
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+    if p.exists():
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data and isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+def _load_latest_hour_candles(ts: int) -> tuple[list[dict], int, int]:
+    """
+    저장된 분봉 중 가장 최근 데이터 로드. (재시작 후에도 이전 시간대 데이터 표시)
+    반환: (candles, period_start, period_end) 또는 ([], 0, 0)
+    """
+    dt = datetime.fromtimestamp(ts)
+    for h_offset in range(0, 24):
+        check_ts = ts - h_offset * 3600
+        candles = _load_hour_candles(check_ts)
+        if candles:
+            d = datetime.fromtimestamp(check_ts)
+            ps = int(datetime(d.year, d.month, d.day, d.hour, 0, 0).timestamp())
+            pe = ps + 3600
+            return candles, ps, pe
+    return [], 0, 0
 
 
 def _save_candle(candle: dict):
@@ -94,6 +157,54 @@ def _save_candle(candle: dict):
     except Exception as e:
         print(f"[SAVE] 캔들 저장 실패: {e}")
 
+
+def _predictions_file_for_ts(ts: int) -> Path:
+    """Unix timestamp -> 예측 저장 파일 경로 (서버 로컬 시간 기준 시간대)"""
+    dt = datetime.fromtimestamp(ts)
+    return PREDICTIONS_DIR / f"{dt:%Y-%m-%d}_{dt.hour:02d}.json"
+
+
+def _load_hour_predictions(ts: int) -> list[dict]:
+    """해당 시간대의 예측 히스토리 로드. 없으면 []."""
+    p = _predictions_file_for_ts(ts)
+    if not p.exists():
+        return []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_prediction(origin_time: int, predictions: list[dict], last_close: float) -> bool:
+    """
+    예측을 파일에 저장. 클라이언트와 동일하게 '예측 끝 시각 도달 시에만' 추가.
+    반환: 실제로 저장했으면 True.
+    """
+    if not predictions:
+        return False
+    existing = _load_hour_predictions(origin_time)
+    # 마지막 예측의 끝 시각
+    last_end = existing[-1]["predictions"][-1]["time"] if existing else 0
+    if origin_time < last_end:
+        return False  # 아직 이전 예측 구간 도달 전
+    entry = {
+        "origin_time": origin_time,
+        "last_close": last_close,
+        "predictions": predictions,
+    }
+    existing.append(entry)
+    p = _predictions_file_for_ts(origin_time)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False)
+        return True
+    except Exception as e:
+        print(f"[SAVE] 예측 저장 실패: {e}")
+        return False
+
+
 app = FastAPI(title="BTC 1분봉 예측 서버")
 
 # ─────────────────────────────────────────────
@@ -102,6 +213,7 @@ app = FastAPI(title="BTC 1분봉 예측 서버")
 connected_clients: set[WebSocket] = set()
 candle_buffer: list[dict]         = []   # 완결 캔들 저장 (최대 60개)
 _prev_candle_ts: int              = 0    # 마지막 완결 캔들 타임스탬프 (중복 예측 방지)
+_last_pred_debug: dict            = {}  # 검증용: 마지막 예측 입력/출력
 
 # ─────────────────────────────────────────────
 #  모델 로드 (선택적)
@@ -110,8 +222,10 @@ _model       = None
 _scaler_mean: Optional[np.ndarray] = None
 _scaler_std:  Optional[np.ndarray] = None
 
+NUM_FEATURES = 7
+
 def _load_model():
-    global _model, _scaler_mean, _scaler_std
+    global _model, _scaler_mean, _scaler_std, NUM_FEATURES
     if not TORCH_AVAILABLE:
         print("[MODEL] PyTorch 없음 → 선형 추정 fallback 사용")
         return
@@ -120,13 +234,15 @@ def _load_model():
         from model import TCNForecaster
         mp, sp = Path("tcn_base_model.pth"), Path("scaler.npy")
         if mp.exists() and sp.exists():
-            m = TCNForecaster(num_features=4, output_steps=PRED_STEPS)
+            sc = np.load(str(sp), allow_pickle=True).item()
+            nf = int(sc.get("num_features", 4))
+            NUM_FEATURES = nf
+            m = TCNForecaster(num_features=nf, output_steps=PRED_STEPS)
             m.load_state_dict(torch.load(str(mp), map_location="cpu"))
             m.eval()
             _model = m
-            sc = np.load(str(sp), allow_pickle=True).item()
             _scaler_mean, _scaler_std = sc["mean"], sc["std"]
-            print("[MODEL] TCN 모델 로드 완료")
+            print(f"[MODEL] TCN 모델 로드 완료 (피처 {nf}개)")
         else:
             print("[MODEL] 모델 파일 없음 → 선형 추정 fallback 사용")
     except Exception as e:
@@ -135,48 +251,99 @@ def _load_model():
 _load_model()
 
 # ─────────────────────────────────────────────
-#  예측 로직
+#  예측 로직 (기술적 지표 + 볼린저 구간)
 # ─────────────────────────────────────────────
 def _run_prediction(buf: list[dict]) -> Optional[list[dict]]:
+    global _last_pred_debug
     if len(buf) < 5:
         return None
-    prices  = [c["close"]  for c in buf]
-    volumes = [c["volume"] for c in buf]
+    highs   = np.array([c["high"]   for c in buf], dtype=np.float64)
+    lows    = np.array([c["low"]    for c in buf], dtype=np.float64)
+    closes  = np.array([c["close"]  for c in buf], dtype=np.float64)
+    volumes = np.array([c["volume"] for c in buf], dtype=np.float64)
     last_ts = buf[-1]["time"]
+
+    # 공통 지표
+    log_ret = np.diff(np.log(closes), prepend=np.log(closes[0]))
+    delta   = np.diff(closes, prepend=closes[0])
+    gain    = np.where(delta > 0, delta, 0.0)
+    loss    = np.where(delta < 0, -delta, 0.0)
+    avg_gain = np.convolve(gain, np.ones(14) / 14, mode="same")
+    avg_loss = np.convolve(loss, np.ones(14) / 14, mode="same")
+    rs      = np.where(avg_loss == 0, 100.0, avg_gain / (avg_loss + 1e-10))
+    rsi     = 100 - (100 / (1 + rs))
+    typical = (highs + lows + closes) / 3.0
+    cum_tpv = np.cumsum(typical * volumes)
+    cum_vol = np.cumsum(volumes)
+    vwap    = np.where(cum_vol > 0, cum_tpv / cum_vol, typical)
 
     if _model is not None:
         try:
             import torch
-            closes = np.array(prices, dtype=np.float64)
-            log_ret = np.diff(np.log(closes), prepend=np.log(closes[0]))
-            delta    = np.diff(closes, prepend=closes[0])
-            gain     = np.where(delta > 0, delta, 0.0)
-            loss     = np.where(delta < 0, -delta, 0.0)
-            avg_gain = np.convolve(gain, np.ones(14) / 14, mode="same")
-            avg_loss = np.convolve(loss, np.ones(14) / 14, mode="same")
-            rs       = np.where(avg_loss == 0, 100.0, avg_gain / (avg_loss + 1e-10))
-            rsi      = 100 - (100 / (1 + rs))
-            vols     = np.array(volumes, dtype=np.float64)
-            feats    = np.stack([log_ret, rsi, closes, vols], axis=1).astype(np.float32)
+            if NUM_FEATURES >= 7:
+                bb_mid   = np.convolve(closes, np.ones(20) / 20, mode="same")
+                bb_std   = np.array([np.std(closes[max(0,i-19):i+1]) for i in range(len(closes))], dtype=np.float64)
+                bb_std   = np.where(bb_std < 1e-8, 0.01, bb_std)
+                bb_upper = bb_mid + 2 * bb_std
+                bb_lower = bb_mid - 2 * bb_std
+                bb_width = np.where(closes > 0, (bb_upper - bb_lower) / closes, 0.02)
+                bb_pos   = np.where((bb_upper - bb_lower) > 1e-8, (closes - bb_lower) / (bb_upper - bb_lower), 0.5)
+                bb_pos   = np.clip(bb_pos, 0, 2)
+                tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
+                tr[0] = highs[0] - lows[0]
+                atr_14 = np.convolve(tr, np.ones(14) / 14, mode="same") / np.where(closes > 0, closes, 1)
+                atr_14 = np.where(np.isnan(atr_14) | (atr_14 < 1e-8), 0.005, atr_14)
+                feats = np.stack([log_ret, rsi, vwap, volumes, bb_width, bb_pos, atr_14], axis=1).astype(np.float32)
+            else:
+                feats = np.stack([log_ret, rsi, vwap, volumes], axis=1).astype(np.float32)
+
             if _scaler_mean is not None:
                 feats = (feats - _scaler_mean) / (_scaler_std + 1e-8)
             x = torch.tensor(feats[-MAX_CANDLE_BUFFER:]).unsqueeze(0)
             with torch.no_grad():
                 pred_lr = _model(x).squeeze().numpy()
-            last_c, pred_prices = closes[-1], []
+            last_c, pred_prices = float(closes[-1]), []
             for lr in pred_lr:
                 last_c = float(last_c) * float(np.exp(lr))
                 pred_prices.append(last_c)
+
+            _last_pred_debug.update({
+                "model": "TCN",
+                "num_features": NUM_FEATURES,
+                "origin_time": last_ts,
+                "input_last_close": float(closes[-1]),
+                "pred_log_returns": [float(x) for x in pred_lr],
+                "pred_prices": [round(float(p), 2) for p in pred_prices],
+                "bb_width_last": float(bb_width[-1]) if NUM_FEATURES >= 7 else None,
+            })
         except Exception as e:
             print(f"[PRED] 모델 추론 오류: {e} → fallback")
-            pred_prices = predict_linear(prices, PRED_STEPS)
+            pred_prices = predict_linear([c["close"] for c in buf], PRED_STEPS)
+            _last_pred_debug.update({"model": "linear_fallback", "error": str(e)})
     else:
-        pred_prices = predict_linear(prices, PRED_STEPS)
+        pred_prices = predict_linear([c["close"] for c in buf], PRED_STEPS)
+        _last_pred_debug.update({"model": "linear_fallback", "reason": "no_model"})
 
-    return [
-        {"time": last_ts + (i + 1) * 60, "value": round(float(p), 2)}
-        for i, p in enumerate(pred_prices)
-    ]
+    # 볼린저 구간 (최근 20봉 변동성 기반)
+    bb_mid = np.convolve(closes, np.ones(20) / 20, mode="same")
+    bb_std = np.array([np.std(closes[max(0, i - 19):i + 1]) for i in range(len(closes))], dtype=np.float64)
+    bb_std = np.where(bb_std < 1e-8, closes * 0.001, bb_std)
+    bb_width_arr = (2 * 2 * bb_std) / np.where(closes > 0, closes, 1)
+    half_range = float(bb_width_arr[-1]) * 0.5 if len(bb_width_arr) else 0.01
+
+    result = []
+    for i, p in enumerate(pred_prices):
+        pv = float(p)
+        lo = round(pv * (1 - half_range), 2)
+        hi = round(pv * (1 + half_range), 2)
+        lo, hi = min(lo, pv), max(hi, pv)
+        result.append({
+            "time": last_ts + (i + 1) * 60,
+            "value": round(pv, 2),
+            "lower": lo,
+            "upper": hi,
+        })
+    return result
 
 # ─────────────────────────────────────────────
 #  WebSocket 브로드캐스트 (프론트엔드 → )
@@ -222,6 +389,7 @@ async def _handle_candle(candle: dict):
             candle_buffer.pop(0)
         predictions = _run_prediction(candle_buffer)
         if predictions:
+            _save_prediction(candle["time"], predictions, float(candle["close"]))
             await _broadcast({
                 "type": "prediction",
                 "predictions": predictions,
@@ -371,22 +539,34 @@ async def ws_endpoint(ws: WebSocket):
     connected_clients.add(ws)
     print(f"[CLIENT] 연결 (총 {len(connected_clients)}개)")
 
-    # 신규 접속 시 현재 시간대(1시간) 분봉 파일에서 과거 데이터 로드 후 전송
+    # 신규 접속 시 저장된 분봉 중 가장 최근 시간대 로드 (재시작 후에도 이전 데이터 표시)
     now_ts = int(datetime.now().timestamp())
-    hour_candles = _load_hour_candles(now_ts)
-    if hour_candles:
-        dt = datetime.fromtimestamp(now_ts)
-        period_start = int(datetime(dt.year, dt.month, dt.day, dt.hour, 0, 0).timestamp())
-        period_end = period_start + 3600  # 1시간
+    hour_candles, period_start, period_end = _load_latest_hour_candles(now_ts)
+    if hour_candles and period_start and period_end:
         try:
+            is_past = (period_end <= now_ts)
             await ws.send_text(json.dumps({
                 "type": "hour_history",
                 "candles": hour_candles,
                 "period_start": period_start,
                 "period_end": period_end,
+                "is_past": is_past,
             }, ensure_ascii=False))
+            print(f"[CLIENT] hour_history 전송: {len(hour_candles)}개 (period {period_start}~{period_end})")
         except Exception as e:
             print(f"[CLIENT] hour_history 전송 실패: {e}")
+
+    # 예측 히스토리 로드 (캔들과 동일 시간대)
+    pred_ts = period_start if period_start else now_ts
+    hour_predictions = _load_hour_predictions(pred_ts)
+    if hour_predictions:
+        try:
+            await ws.send_text(json.dumps({
+                "type": "prediction_history",
+                "predictions": hour_predictions,
+            }, ensure_ascii=False))
+        except Exception as e:
+            print(f"[CLIENT] prediction_history 전송 실패: {e}")
 
     try:
         while True:
@@ -442,6 +622,37 @@ async def status():
         "model":          "TCN" if _model is not None else "linear_fallback",
         "last_close":     candle_buffer[-1]["close"] if candle_buffer else None,
     }
+
+
+@app.get("/api/model_debug")
+async def model_debug():
+    """예측 검증용: 마지막 예측의 모델 유형, log_return 출력값, 가격 변환 결과."""
+    return {
+        "model_loaded": _model is not None,
+        **_last_pred_debug,
+    }
+
+
+@app.get("/api/logs")
+async def get_logs(tail: int = 1000):
+    """서버 로그 파일 내용 (마지막 tail줄). txt 형식."""
+    if not LOG_FILE.exists():
+        return {"content": "", "path": str(LOG_FILE)}
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        content = "".join(lines[-tail:]) if len(lines) > tail else "".join(lines)
+        return {"content": content, "path": str(LOG_FILE), "lines": len(lines)}
+    except Exception as e:
+        return {"content": f"[오류] {e}", "path": str(LOG_FILE)}
+
+
+@app.get("/api/logs/download")
+async def download_logs():
+    """로그 파일 직접 다운로드."""
+    if not LOG_FILE.exists():
+        return JSONResponse({"error": "로그 파일 없음"}, status_code=404)
+    return FileResponse(LOG_FILE, filename="server.txt", media_type="text/plain")
 
 @app.get("/")
 async def index():

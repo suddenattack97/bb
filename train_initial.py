@@ -33,17 +33,28 @@ class BigBinanceDataset(Dataset):
         # 최근 3년치만 사용 (RAM 절약)
         df = df.loc['2022-01-01':]
 
-        # 피처 엔지니어링
+        # 피처 엔지니어링 (비트코인 예측에 적합한 기술적 지표)
         df['log_return'] = np.log(df['close'] / df['close'].shift(1)).fillna(0)
         df['rsi_14']     = ta.rsi(df['close'], length=14).fillna(50)
         df['vwap']       = ta.vwap(df['high'], df['low'], df['close'], df['volume']).ffill().bfill()
+        # 볼린저 밴드 (구간 예측용) - 직접 계산으로 호환성 확보
+        bb_mid   = df['close'].rolling(20).mean()
+        bb_std   = df['close'].rolling(20).std().fillna(0.01)
+        df['bb_upper']   = (bb_mid + 2 * bb_std).ffill().bfill()
+        df['bb_lower']   = (bb_mid - 2 * bb_std).ffill().bfill()
+        df['bb_width']   = ((df['bb_upper'] - df['bb_lower']) / df['close']).fillna(0.02)
+        df['bb_position']= ((df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)).clip(0, 2).fillna(0.5)
+        # ATR (변동성, 상대값)
+        prev_close = df['close'].shift(1).fillna(df['close'])
+        tr = np.maximum(df['high'] - df['low'], np.maximum(abs(df['high'] - prev_close), abs(df['low'] - prev_close)))
+        df['atr_14'] = (tr.rolling(14).mean() / df['close']).ffill().bfill().fillna(0.005)
 
         df = df.dropna()
 
         self.seq_len  = seq_len
         self.pred_len = pred_len
 
-        features = ['log_return', 'rsi_14', 'vwap', 'volume']
+        features = ['log_return', 'rsi_14', 'vwap', 'volume', 'bb_width', 'bb_position', 'atr_14']
         raw = df[features].values.astype(np.float32)
 
         # 정규화 파라미터 저장 (server.py 에서 동일하게 사용)
@@ -67,12 +78,19 @@ class BigBinanceDataset(Dataset):
 
 def train_base_model(csv_file: str = "BTC_all_1m.csv", epochs: int = 5):
     dataset     = BigBinanceDataset(csv_file)
-    train_loader = DataLoader(dataset, batch_size=1024, shuffle=True, num_workers=0)
+    train_loader = DataLoader(
+        dataset,
+        batch_size=1024,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+    )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"학습 디바이스: {device}")
 
-    model     = TCNForecaster(num_features=4, output_steps=5).to(device)
+    NUM_FEATURES = 7
+    model     = TCNForecaster(num_features=NUM_FEATURES, output_steps=5).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
@@ -95,7 +113,7 @@ def train_base_model(csv_file: str = "BTC_all_1m.csv", epochs: int = 5):
         print(f"✅ Epoch {epoch+1}/{epochs} 완료 — 평균 Loss: {avg:.6f}")
 
     torch.save(model.state_dict(), "tcn_base_model.pth")
-    np.save("scaler.npy", {'mean': dataset.mean, 'std': dataset.std})
+    np.save("scaler.npy", {'mean': dataset.mean, 'std': dataset.std, 'num_features': NUM_FEATURES})
     print("🎉 초기 베이스 모델 학습 및 저장 완료! (tcn_base_model.pth, scaler.npy)")
 
 

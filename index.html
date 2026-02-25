@@ -137,6 +137,8 @@
     .stat-value { color: #e6edf3; font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
     .stat-value.up   { color: #3fb950; }
     .stat-value.down { color: #f85149; }
+    #stats-bar .btn-debug { margin-left: auto; font-size: 0.75rem; padding: 5px 10px; background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 6px; cursor: pointer; }
+    #stats-bar .btn-debug:hover { background: #2d333b; color: #c9d1d9; }
 
     /* ── 스냅샷 갤러리 ── */
     #gallery {
@@ -195,6 +197,50 @@
       cursor: pointer;
       line-height: 1;
     }
+
+    /* ── 서버 로그 인디케이터 ── */
+    #log-indicator {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    #log-indicator .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: #0d1117;
+      cursor: pointer;
+      font-size: 0.8rem;
+      color: #8b949e;
+      user-select: none;
+    }
+    #log-indicator .log-header:hover { background: #161b22; color: #c9d1d9; }
+    #log-indicator .log-header .log-badge {
+      background: #238636;
+      color: #fff;
+      font-size: 0.65rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    #log-indicator .log-body {
+      display: none;
+      max-height: 280px;
+      overflow: auto;
+    }
+    #log-indicator.expanded .log-body { display: block; }
+    #log-indicator .log-content {
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.7rem;
+      line-height: 1.4;
+      padding: 10px 14px;
+      color: #c9d1d9;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    #log-indicator .log-actions { padding: 6px 14px; display: flex; gap: 8px; border-top: 1px solid #21262d; }
+    #log-indicator .log-actions button { font-size: 0.7rem; padding: 4px 10px; }
   </style>
 </head>
 <body>
@@ -247,15 +293,35 @@
     <span class="stat-label">다음 스냅샷까지</span>
     <span class="stat-value" id="stat-countdown">--</span>
   </div>
+  <div class="stat-item">
+    <span class="stat-label">모델</span>
+    <span class="stat-value" id="stat-model">--</span>
+  </div>
+  <button id="btn-model-debug" class="btn-debug">🔍 예측 검증</button>
 </div>
 
-<!-- ④ 스냅샷 갤러리 -->
+<!-- ④ 서버 로그 인디케이터 -->
+<div id="log-indicator">
+  <div class="log-header">
+    <span>📋 서버 로그 (data/logs/server.txt)</span>
+    <span class="log-badge" id="log-badge">0 lines</span>
+  </div>
+  <div class="log-body">
+    <pre class="log-content" id="log-content">로딩 중...</pre>
+    <div class="log-actions">
+      <button id="btn-log-refresh" style="background:#238636;color:#fff;">새로고침</button>
+      <a id="btn-log-download" href="/api/logs/download" target="_blank" download="server.txt" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px 10px;font-size:0.7rem;text-decoration:none;cursor:pointer;">다운로드 (.txt)</a>
+    </div>
+  </div>
+</div>
+
+<!-- ⑤ 스냅샷 갤러리 -->
 <div id="gallery">
   <h3>📂 스냅샷 히스토리</h3>
   <div id="snapshot-list"><span style="color:#6e7681;font-size:.8rem;">저장된 스냅샷이 없습니다.</span></div>
 </div>
 
-<!-- ⑤ 스냅샷 뷰어 -->
+<!-- ⑥ 스냅샷 뷰어 -->
 <div id="viewer-overlay">
   <span id="viewer-close">✕</span>
   <img id="viewer-img" src="" alt="snapshot" />
@@ -357,6 +423,7 @@ const anchorSeries = chart.addLineSeries({
 // ============================================================
 let periodStart  = null;   // Date
 let periodEnd    = null;   // Date
+let periodIsPast = false;  // 이미 지난 구간(재시작 후 로드)이면 자동 스냅샷 안 함
 let _rangeFixed  = false;  // setVisibleRange가 실제로 적용됐는지 여부
 
 function calcPeriod(now) {
@@ -397,7 +464,8 @@ function applyFixedTimeline(start, end) {
 // ============================================================
 //  차트 상태
 // ============================================================
-let predictionSeriesList = [];   // 누적 예측 LineSeries 목록
+let predictionSeriesList = [];   // 누적 예측 LineSeries 목록 (이전 것은 지우지 않음)
+let lastPredictionEndTs  = 0;    // 마지막 예측의 끝 시각 (chart time), 이 시각 도달 시에만 새 예측 추가
 let candleCount   = 0;
 let lastCandleTs  = 0;           // 마지막으로 카운트한 캔들의 timestamp (중복 방지)
 let periodOpen    = null;        // 구간 첫 번째 캔들 시가 (변화율 계산용)
@@ -431,6 +499,7 @@ function resetChart() {
     try { chart.removeSeries(s); } catch (_) {}
   });
   predictionSeriesList = [];
+  lastPredictionEndTs  = 0;
 
   // 캔들 & 라인 & anchor 초기화
   candleData = [];
@@ -447,7 +516,8 @@ function resetChart() {
   document.getElementById('stat-change').textContent  = '--';
   document.getElementById('stat-change').className    = 'stat-value';
 
-  // 새 구간 타임라인 설정
+  // 새 구간 타임라인 설정 (실시간 모드)
+  periodIsPast = false;
   const { start, end } = calcPeriod(new Date());
   periodStart = start;
   periodEnd   = end;
@@ -508,6 +578,31 @@ document.getElementById('btn-reset').addEventListener('click', resetChart);
 document.getElementById('btn-view-candle').addEventListener('click', () => switchView('candle'));
 document.getElementById('btn-view-line').addEventListener('click', () => switchView('line'));
 
+// 모델 상태 로드 및 검증 버튼
+async function refreshModelStatus() {
+  try {
+    const res = await fetch('/status');
+    const d = await res.json();
+    document.getElementById('stat-model').textContent = d.model || '--';
+  } catch (_) {}
+}
+refreshModelStatus();
+setInterval(refreshModelStatus, 10000);
+
+document.getElementById('btn-model-debug').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/model_debug');
+    const d = await res.json();
+    const msg = d.model === 'TCN'
+      ? `모델: TCN ✅\n입력 종가: ${d.input_last_close}\n예측 log_return(5분): [${(d.pred_log_returns||[]).map(x=>x.toFixed(6)).join(', ')}]\n예측 가격: [${(d.pred_prices||[]).join(', ')}]`
+      : `모델: ${d.model || 'unknown'}\n${d.error || d.reason || ''}`;
+    alert(msg);
+    console.log('model_debug:', d);
+  } catch (e) {
+    alert('검증 API 오류: ' + e.message);
+  }
+});
+
 // ============================================================
 //  갤러리
 // ============================================================
@@ -545,6 +640,41 @@ document.getElementById('viewer-overlay').addEventListener('click', e => {
 });
 
 loadSnapshotGallery();
+
+// ============================================================
+//  서버 로그 인디케이터
+// ============================================================
+async function loadLogs() {
+  try {
+    const res = await fetch('/api/logs?tail=500');
+    const d = await res.json();
+    const pre = document.getElementById('log-content');
+    const badge = document.getElementById('log-badge');
+    pre.textContent = d.content || '(비어 있음)';
+    badge.textContent = `${d.lines ?? 0} lines`;
+  } catch (e) {
+    document.getElementById('log-content').textContent = `로드 실패: ${e.message}`;
+  }
+}
+
+document.querySelector('#log-indicator .log-header').addEventListener('click', () => {
+  document.getElementById('log-indicator').classList.toggle('expanded');
+  if (document.getElementById('log-indicator').classList.contains('expanded')) {
+    loadLogs();
+  }
+});
+
+document.getElementById('btn-log-refresh').addEventListener('click', (e) => {
+  e.preventDefault();
+  loadLogs();
+});
+
+// 펼쳐진 상태에서 5초마다 자동 갱신
+setInterval(() => {
+  if (document.getElementById('log-indicator').classList.contains('expanded')) {
+    loadLogs();
+  }
+}, 5000);
 
 // ============================================================
 //  UI 타이머 (1초마다 시각 + 카운트다운 갱신)
@@ -622,6 +752,7 @@ function connectWS() {
       const candles = data.candles;
       const ps = data.period_start ? data.period_start * 1000 : null;
       const pe = data.period_end ? data.period_end * 1000 : null;
+      periodIsPast = !!data.is_past;
       if (ps && pe) {
         periodStart = new Date(ps);
         periodEnd   = new Date(pe);
@@ -660,8 +791,48 @@ function connectWS() {
       return;
     }
 
-    // ── 1시간 구간 경계 체크 ──────────────────────────
-    if (periodEnd && now >= periodEnd) {
+    // ── prediction_history: 접속 시 해당 1시간 예측 히스토리 로드 ─────────────────
+    if (data.type === 'prediction_history' && Array.isArray(data.predictions)) {
+      const colors = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
+      data.predictions.forEach((entry, idx) => {
+        const preds = entry.predictions || [];
+        if (preds.length === 0) return;
+        const points = preds.map(p => ({
+          time:  toChartTime((p.time || 0) * 1000),
+          value: p.value,
+          lower: p.lower,
+          upper: p.upper,
+        }));
+        const originTime = toChartTime((entry.origin_time || 0) * 1000);
+        const lastCloseVal = entry.last_close;
+        const baseColor = colors[idx % colors.length];
+        const hasRange = points.some(p => p.lower != null && p.upper != null);
+
+        if (hasRange) {
+          const startVal = lastCloseVal ?? points[0]?.value ?? 0;
+          const upperSeries = chart.addLineSeries({ color: baseColor + '40', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+          const lowerSeries = chart.addLineSeries({ color: baseColor + '40', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+          upperSeries.setData([{ time: originTime, value: startVal }, ...points.map(p => ({ time: p.time, value: p.upper }))]);
+          lowerSeries.setData([{ time: originTime, value: startVal }, ...points.map(p => ({ time: p.time, value: p.lower }))]);
+          predictionSeriesList.push(upperSeries, lowerSeries);
+        }
+
+        const predSeries = chart.addLineSeries({ color: baseColor, lineWidth: 2.5, lineStyle: LightweightCharts.LineStyle.Dashed, crosshairMarkerVisible: true, lastValueVisible: true, priceLineVisible: false });
+        if (lastCloseVal != null && points.length > 0) {
+          predSeries.setData([{ time: originTime, value: lastCloseVal }, ...points.map(p => ({ time: p.time, value: p.value }))]);
+        } else {
+          predSeries.setData(points.map(p => ({ time: p.time, value: p.value })));
+        }
+
+        predictionSeriesList.push(predSeries);
+        lastPredictionEndTs = points[points.length - 1].time;
+      });
+      document.getElementById('stat-preds').textContent = String(predictionSeriesList.length);
+      applyTimeAxisRange();
+    }
+
+    // ── 1시간 구간 경계 체크 (이미 지난 구간이면 자동 스냅샷 생략) ──────────────────────────
+    if (!periodIsPast && periodEnd && now >= periodEnd) {
       console.log('⏰ 1시간 구간 종료 → 스냅샷 + 초기화');
       takeSnapshotAndReset();
       return;
@@ -714,38 +885,58 @@ function connectWS() {
       applyTimeAxisRange();
     }
 
-    // ── 예측 궤적 오버레이 (라인뷰에서도 보이도록 전면에 표시) ───────
-    if (data.type === 'prediction' && Array.isArray(data.predictions)) {
-
-      const colors = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
-      const color = colors[predictionSeriesList.length % colors.length];
-
-      const predSeries = chart.addLineSeries({
-        color:                  color,
-        lineWidth:              2.5,
-        lineStyle:              LightweightCharts.LineStyle.Dashed,
-        crosshairMarkerVisible: true,
-        lastValueVisible:       true,
-        priceLineVisible:       false,
-      });
+    // ── 예측 궤적 + 볼린저 구간 (상·하단 밴드) ───────
+    if (data.type === 'prediction' && Array.isArray(data.predictions) && data.predictions.length > 0) {
 
       const points = data.predictions.map(p => ({
-        time:  toChartTime(p.time * 1000),
+        time:  toChartTime((p.time || 0) * 1000),
         value: p.value,
+        lower: p.lower,
+        upper: p.upper,
       }));
+      const predEndTs = points[points.length - 1].time;
 
-      // 예측 궤적의 시작점을 현재 캔들 종가에 연결
-      if (lastClose !== null && points.length > 0) {
-        const originTime = data.origin_time
-          ? toChartTime(data.origin_time * 1000)
-          : points[0].time - 60;
-        predSeries.setData([{ time: originTime, value: lastClose }, ...points]);
+      const canAdd = predictionSeriesList.length === 0 || lastCandleTs >= lastPredictionEndTs;
+      if (!canAdd) return;
+
+      const colors = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
+      const baseColor = colors[predictionSeriesList.length % colors.length];
+      const originTime = data.origin_time ? toChartTime(data.origin_time * 1000) : points[0].time - 60;
+
+      // 구간 밴드 (upper/lower) — 있으면 표시
+      const hasRange = points.some(p => p.lower != null && p.upper != null);
+      if (hasRange) {
+        const upperPoints = [{ time: originTime, value: lastClose }, ...points.map(p => ({ time: p.time, value: p.upper }))];
+        const lowerPoints = [{ time: originTime, value: lastClose }, ...points.map(p => ({ time: p.time, value: p.lower }))];
+        const bandColor = baseColor + '40';
+        const upperSeries = chart.addLineSeries({
+          color: bandColor, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+          crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+        });
+        const lowerSeries = chart.addLineSeries({
+          color: bandColor, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted,
+          crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+        });
+        upperSeries.setData(upperPoints);
+        lowerSeries.setData(lowerPoints);
+        predictionSeriesList.push(upperSeries, lowerSeries);
+      }
+
+      // 메인 예측선
+      const predSeries = chart.addLineSeries({
+        color: baseColor, lineWidth: 2.5, lineStyle: LightweightCharts.LineStyle.Dashed,
+        crosshairMarkerVisible: true, lastValueVisible: true, priceLineVisible: false,
+      });
+
+      if (lastClose != null && points.length > 0) {
+        predSeries.setData([{ time: originTime, value: lastClose }, ...points.map(p => ({ time: p.time, value: p.value }))]);
       } else {
-        predSeries.setData(points);
+        predSeries.setData(points.map(p => ({ time: p.time, value: p.value })));
       }
 
       predictionSeriesList.push(predSeries);
-      document.getElementById('stat-preds').textContent = predictionSeriesList.length;
+      lastPredictionEndTs = predEndTs;
+      document.getElementById('stat-preds').textContent = String(Math.ceil(predictionSeriesList.length / (hasRange ? 3 : 1)));
 
       applyTimeAxisRange();
     }
