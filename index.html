@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BTC/USDT 1분봉 적중률 검증 차트</title>
+  <title>검증</title>
 
   <!-- Lightweight Charts v4 (standalone) -->
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -61,7 +61,7 @@
     #ws-dot.disconnected { background: #f85149; }
 
     /* ── 버튼 그룹 ── */
-    .btn-group { display: flex; gap: 8px; }
+    .btn-group { display: flex; gap: 8px; align-items: center; }
     button {
       padding: 7px 14px;
       border: none;
@@ -74,6 +74,25 @@
     button:hover { opacity: 0.85; }
     #btn-snapshot { background: #2962ff; color: #fff; }
     #btn-reset    { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+
+    /* 뷰 토글 */
+    .view-toggle {
+      display: flex;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid #30363d;
+    }
+    .view-toggle button {
+      background: #21262d;
+      color: #6e7681;
+      border: none;
+      border-radius: 0;
+      padding: 6px 14px;
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+    }
+    .view-toggle button:hover { background: #2d333b; color: #c9d1d9; opacity: 1; }
+    .view-toggle button.active { background: #1f6feb; color: #fff; }
 
     /* ── 차트 영역 ── */
     #chart-wrapper {
@@ -191,6 +210,10 @@
     </div>
   </div>
   <div class="btn-group">
+    <div class="view-toggle">
+      <button id="btn-view-candle" class="active">캔들</button>
+      <button id="btn-view-line">라인</button>
+    </div>
     <button id="btn-snapshot">📷 수동 스냅샷</button>
     <button id="btn-reset">🔄 차트 초기화</button>
   </div>
@@ -304,8 +327,21 @@ const candleSeries = chart.addCandlestickSeries({
   wickDownColor: '#ef5350',
 });
 
+// 라인 뷰용 에리어 시리즈 (초기에는 숨김)
+const realAreaSeries = chart.addAreaSeries({
+  topColor:              'rgba(88, 166, 255, 0.18)',
+  bottomColor:           'rgba(88, 166, 255, 0.0)',
+  lineColor:             '#58a6ff',
+  lineWidth:             2,
+  crosshairMarkerVisible: true,
+  crosshairMarkerRadius:  4,
+  lastValueVisible:      true,
+  priceLineVisible:      true,
+  priceLineColor:        'rgba(88,166,255,0.5)',
+});
+
 // ── Anchor 시리즈 ────────────────────────────────────────────
-// 30분 창 양끝에 투명 포인트를 고정해 X축 범위를 보장합니다.
+// 1시간 창(13:00~13:59) 양끝에 투명 포인트를 고정해 X축 범위를 보장합니다.
 // autoscaleInfoProvider: () => null → Y축 자동 스케일에서 완전히 제외됩니다.
 const anchorSeries = chart.addLineSeries({
   color:                 'rgba(0,0,0,0)',
@@ -317,46 +353,37 @@ const anchorSeries = chart.addLineSeries({
 });
 
 // ============================================================
-//  30분 고정 타임라인 관리
+//  1시간 고정 타임라인 (예: 13:00 ~ 13:59)
 // ============================================================
 let periodStart  = null;   // Date
 let periodEnd    = null;   // Date
 let _rangeFixed  = false;  // setVisibleRange가 실제로 적용됐는지 여부
 
 function calcPeriod(now) {
-  const m = now.getMinutes();
-  const startMin = m < 30 ? 0 : 30;
-
-  const s = new Date(now);
-  s.setMinutes(startMin, 0, 0);
-  s.setMilliseconds(0);
-
-  const e = new Date(s);
-  e.setMinutes(startMin + 30, 0, 0);   // JS Date가 60분 넘으면 자동으로 시간 올림
-
+  const s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0);
+  const e = new Date(s.getTime() + 3600 * 1000);  // +1시간
   return { start: s, end: e };
 }
 
 /**
- * Anchor 시리즈에 현재 가격으로 30분 창 양끝 포인트를 심습니다.
- * 첫 호출 시 setVisibleRange를 한 번 확정 적용합니다.
+ * 시간축을 13:00~14:00까지 미리 61개 틱으로 고정.
+ * 축은 처음부터 만들고, 실제 데이터만 해당 슬롯에 채워짐.
  */
-function refreshAnchor(price) {
-  if (!periodStart || !periodEnd || price <= 0) return;
+function applyTimeAxisRange() {
+  if (!periodStart || !periodEnd) return;
   const fromTs = toChartTime(periodStart.getTime());
   const toTs   = toChartTime(periodEnd.getTime());
-  // 현재가와 동일한 값이므로 Y축에는 실질적 영향 없음
-  anchorSeries.setData([
-    { time: fromTs, value: price },
-    { time: toTs,   value: price },
-  ]);
-  // 아직 range가 확정 적용되지 않았으면 지금 적용
-  if (!_rangeFixed) {
-    try {
-      chart.timeScale().setVisibleRange({ from: fromTs, to: toTs });
-      _rangeFixed = true;
-    } catch (_) {}
+  const anchorVal = lastClose && lastClose > 0 ? lastClose : 50000;
+  // 61개 포인트 (13:00, 13:01, ... 13:59, 14:00) → 시간축 틱 미리 생성
+  const anchorData = [];
+  for (let t = fromTs; t <= toTs; t += 60) {
+    anchorData.push({ time: t, value: anchorVal });
   }
+  anchorSeries.setData(anchorData);
+  try {
+    chart.timeScale().setVisibleRange({ from: fromTs, to: toTs });
+    _rangeFixed = true;
+  } catch (_) {}
 }
 
 function applyFixedTimeline(start, end) {
@@ -364,8 +391,7 @@ function applyFixedTimeline(start, end) {
   const endStr   = `${pad(end.getHours())}:${pad(end.getMinutes())}`;
   document.getElementById('lbl-period').textContent =
     `현재 구간: ${startStr} ~ ${endStr}`;
-  // 가격이 이미 있으면 anchor 즉시 갱신, 없으면 첫 캔들 수신 시 자동 갱신
-  if (lastClose) refreshAnchor(lastClose);
+  applyTimeAxisRange();
 }
 
 // ============================================================
@@ -377,6 +403,28 @@ let lastCandleTs  = 0;           // 마지막으로 카운트한 캔들의 times
 let periodOpen    = null;        // 구간 첫 번째 캔들 시가 (변화율 계산용)
 let lastClose     = null;
 
+// 뷰 모드 & 데이터 버퍼 (모드 전환 시 재활용)
+let viewMode   = 'candle';  // 'candle' | 'line'
+let candleData = [];        // { time, open, high, low, close }[]
+let lineData   = [];        // { time, value }[]
+
+function switchView(mode) {
+  if (mode === viewMode) return;
+  viewMode = mode;
+
+  document.getElementById('btn-view-candle').classList.toggle('active', mode === 'candle');
+  document.getElementById('btn-view-line').classList.toggle('active', mode === 'line');
+
+  if (mode === 'line') {
+    candleSeries.setData([]);
+    realAreaSeries.setData(lineData);
+  } else {
+    realAreaSeries.setData([]);
+    candleSeries.setData(candleData);
+  }
+  applyTimeAxisRange();
+}
+
 function resetChart() {
   // 모든 예측 시리즈 제거
   predictionSeriesList.forEach(s => {
@@ -384,8 +432,11 @@ function resetChart() {
   });
   predictionSeriesList = [];
 
-  // 캔들 & anchor 초기화
+  // 캔들 & 라인 & anchor 초기화
+  candleData = [];
+  lineData   = [];
   candleSeries.setData([]);
+  realAreaSeries.setData([]);
   anchorSeries.setData([]);
   candleCount  = 0;
   lastCandleTs = 0;
@@ -454,6 +505,8 @@ async function takeSnapshotAndReset() {
 
 document.getElementById('btn-snapshot').addEventListener('click', takeSnapshotAndReset);
 document.getElementById('btn-reset').addEventListener('click', resetChart);
+document.getElementById('btn-view-candle').addEventListener('click', () => switchView('candle'));
+document.getElementById('btn-view-line').addEventListener('click', () => switchView('line'));
 
 // ============================================================
 //  갤러리
@@ -564,34 +617,90 @@ function connectWS() {
       ov.classList.add('hidden');
     }
 
-    // ── 30분 구간 경계 체크 ──────────────────────────
-    if (periodEnd && now >= periodEnd) {
-      console.log('⏰ 30분 구간 종료 → 스냅샷 + 초기화');
-      takeSnapshotAndReset();
-      return;  // resetChart 내부에서 periodEnd 갱신됨
+    // ── hour_history: 접속 시 해당 1시간 구간 과거 분봉 로드 ─────────────────
+    if (data.type === 'hour_history' && Array.isArray(data.candles)) {
+      const candles = data.candles;
+      const ps = data.period_start ? data.period_start * 1000 : null;
+      const pe = data.period_end ? data.period_end * 1000 : null;
+      if (ps && pe) {
+        periodStart = new Date(ps);
+        periodEnd   = new Date(pe);
+        applyFixedTimeline(periodStart, periodEnd);
+      }
+      _rangeFixed = false;
+      candleData = [];
+      lineData   = [];
+      candleCount = 0;
+      periodOpen = candles.length ? candles[0].open : null;
+      lastClose  = candles.length ? candles[candles.length - 1].close : null;
+
+      candles.forEach((c) => {
+        const ts = toChartTime((c.time || 0) * 1000);
+        candleData.push({ time: ts, open: c.open, high: c.high, low: c.low, close: c.close });
+        lineData.push({ time: ts, value: c.close });
+      });
+      candleCount = candleData.length;
+      lastCandleTs = candleData.length ? candleData[candleData.length - 1].time : 0;
+
+      if (viewMode === 'candle') {
+        candleSeries.setData(candleData);
+        realAreaSeries.setData([]);
+      } else {
+        realAreaSeries.setData(lineData);
+        candleSeries.setData([]);
+      }
+      anchorSeries.setData([]);
+      applyTimeAxisRange();
+      document.getElementById('stat-candles').textContent = candleCount;
+      document.getElementById('stat-price').textContent = lastClose ? fmt(lastClose) : '--';
+      const change = periodOpen ? ((lastClose - periodOpen) / periodOpen * 100) : 0;
+      const el = document.getElementById('stat-change');
+      el.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(3)}%`;
+      el.className = `stat-value ${change >= 0 ? 'up' : 'down'}`;
+      return;
     }
 
-    // ── 실시간 캔들 렌더링 ────────────────────────────
+    // ── 1시간 구간 경계 체크 ──────────────────────────
+    if (periodEnd && now >= periodEnd) {
+      console.log('⏰ 1시간 구간 종료 → 스냅샷 + 초기화');
+      takeSnapshotAndReset();
+      return;
+    }
+
+    // ── 실시간 분봉 업데이트 (분단위, 동일 분은 upsert) ────────────────────
     if (data.type === 'real_time_candle') {
       const c = data.candle;
-      const chartCandle = {
-        time:  toChartTime(c.time * 1000),
-        open:  c.open,
-        high:  c.high,
-        low:   c.low,
-        close: c.close,
-      };
+      const ts = toChartTime((c.time || 0) * 1000);
+      const chartCandle = { time: ts, open: c.open, high: c.high, low: c.low, close: c.close };
+      const chartLine   = { time: ts, value: c.close };
 
-      candleSeries.update(chartCandle);
+      // time 기준 upsert (분단위 - 동일 분이면 덮어쓰기)
+      let found = false;
+      for (let i = 0; i < candleData.length; i++) {
+        if (candleData[i].time === ts) {
+          candleData[i] = chartCandle;
+          lineData[i]   = chartLine;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        candleData.push(chartCandle);
+        lineData.push(chartLine);
+      }
+
+      if (viewMode === 'candle') {
+        candleSeries.update(chartCandle);
+      } else {
+        realAreaSeries.update(chartLine);
+      }
+
       lastClose = c.close;
-
-      // 구간 첫 캔들의 open 저장
       if (periodOpen === null) periodOpen = c.open;
 
-      // 새로운 타임스탬프(새 캔들 시작)일 때만 캔들 카운트 증가
-      if (chartCandle.time !== lastCandleTs) {
-        lastCandleTs = chartCandle.time;
-        candleCount++;
+      if (ts !== lastCandleTs) {
+        lastCandleTs = ts;
+        candleCount = candleData.length;
         document.getElementById('stat-candles').textContent = candleCount;
       }
 
@@ -602,25 +711,22 @@ function connectWS() {
       el.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(3)}%`;
       el.className   = `stat-value ${change >= 0 ? 'up' : 'down'}`;
 
-      // X축 30분 고정 앵커 갱신 (아직 미적용 상태라면 이 시점에 확정 적용)
-      refreshAnchor(c.close);
+      applyTimeAxisRange();
     }
 
-    // ── 예측 궤적 오버레이 (절대 삭제하지 않음) ───────
+    // ── 예측 궤적 오버레이 (라인뷰에서도 보이도록 전면에 표시) ───────
     if (data.type === 'prediction' && Array.isArray(data.predictions)) {
 
-      // 색상: 같은 구간 내에서 회색→파란색으로 그라데이션 (최대 30개)
-      const alpha = 0.25 + Math.min(predictionSeriesList.length / 30, 0.5) * 0.5;
-      const hue   = 210 + (predictionSeriesList.length % 30) * 2;
+      const colors = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
+      const color = colors[predictionSeriesList.length % colors.length];
 
       const predSeries = chart.addLineSeries({
-        color:                  `hsla(${hue}, 90%, 65%, ${alpha.toFixed(2)})`,
-        lineWidth:              2,
+        color:                  color,
+        lineWidth:              2.5,
         lineStyle:              LightweightCharts.LineStyle.Dashed,
-        crosshairMarkerVisible: false,
-        lastValueVisible:       false,
+        crosshairMarkerVisible: true,
+        lastValueVisible:       true,
         priceLineVisible:       false,
-        autoscaleInfoProvider:  () => null,  // 예측선이 Y축 스케일에 영향 최소화
       });
 
       const points = data.predictions.map(p => ({
@@ -641,8 +747,7 @@ function connectWS() {
       predictionSeriesList.push(predSeries);
       document.getElementById('stat-preds').textContent = predictionSeriesList.length;
 
-      // 예측선이 30분 창 밖으로 나가지 않도록 range 재확인
-      if (lastClose) refreshAnchor(lastClose);
+      applyTimeAxisRange();
     }
   };
 }

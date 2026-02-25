@@ -7,6 +7,8 @@ Binance 연결 전략 (순서대로 시도):
   3) websockets 라이브러리  - data-stream.binance.vision (CDN)
   4) ccxt REST 폴링 fallback - 5초 간격
 
+분봉 데이터: data/candles/YYYY-MM-DD_HH.json 에 시간별로 저장.
+웹 접속 시 해당 시간대 파일에서 과거 분봉을 로드해 채운 뒤 실시간 수신 계속.
 실행: uvicorn server:app --host 0.0.0.0 --port 8000
 """
 import asyncio
@@ -14,6 +16,7 @@ import base64
 import json
 import ssl
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -46,7 +49,50 @@ POLL_INTERVAL_S   = 5
 MAX_CANDLE_BUFFER = 60
 PRED_STEPS        = 5
 SNAPSHOT_DIR      = Path("snapshots")
+CANDLES_DIR       = Path("data/candles")
 SNAPSHOT_DIR.mkdir(exist_ok=True)
+CANDLES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _candles_file_for_ts(ts: int) -> Path:
+    """Unix timestamp -> 저장 파일 경로 (서버 로컬 시간 기준 시간대)"""
+    dt = datetime.fromtimestamp(ts)
+    return CANDLES_DIR / f"{dt:%Y-%m-%d}_{dt.hour:02d}.json"
+
+
+def _load_hour_candles(ts: int) -> list[dict]:
+    """해당 시간대(ts가 포함된 시)의 분봉 목록 로드. 없으면 []."""
+    p = _candles_file_for_ts(ts)
+    if not p.exists():
+        return []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_candle(candle: dict):
+    """완결된 1분봉을 해당 시간대 파일에 저장 (upsert)."""
+    ts = candle["time"]
+    p = _candles_file_for_ts(ts)
+    candles = _load_hour_candles(ts)
+    # time 기준 upsert
+    found = False
+    for i, c in enumerate(candles):
+        if c.get("time") == ts:
+            candles[i] = candle
+            found = True
+            break
+    if not found:
+        candles.append(candle)
+    candles.sort(key=lambda x: x["time"])
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(candles, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[SAVE] 캔들 저장 실패: {e}")
 
 app = FastAPI(title="BTC 1분봉 예측 서버")
 
@@ -151,25 +197,27 @@ async def _broadcast(message: dict):
 #  캔들 처리 (Binance → 프론트엔드)
 # ─────────────────────────────────────────────
 async def _handle_candle(candle: dict):
-    """캔들 수신 시 실시간 업데이트 + 마감 시 예측 브로드캐스트."""
+    """캔들 수신 시 분단위로 전송. 마감 시 파일 저장 + 예측 브로드캐스트."""
     global _prev_candle_ts
 
-    # ① 항상 현재 캔들 전송
-    await _broadcast({
-        "type": "real_time_candle",
-        "candle": {
-            "time":  candle["time"],
-            "open":  candle["open"],
-            "high":  candle["high"],
-            "low":   candle["low"],
-            "close": candle["close"],
-        },
-    })
+    # volume 포함해 전체 전송 (예측/저장에 필요)
+    payload = {
+        "time": candle["time"],
+        "open": candle["open"],
+        "high": candle["high"],
+        "low": candle["low"],
+        "close": candle["close"],
+        "volume": candle.get("volume", 0),
+    }
 
-    # ② 캔들 마감 시에만 예측 실행 (중복 방지)
+    # ① 분단위 캔들 브로드캐스트 (틱이 아닌 1분 단위 - 동일 분은 클라이언트에서 upsert)
+    await _broadcast({"type": "real_time_candle", "candle": payload})
+
+    # ② 마감된 1분봉: 파일 저장 + 예측 실행 (중복 방지)
     if candle["is_closed"] and candle["time"] != _prev_candle_ts:
         _prev_candle_ts = candle["time"]
-        candle_buffer.append(candle)
+        _save_candle(payload)
+        candle_buffer.append(payload)
         if len(candle_buffer) > MAX_CANDLE_BUFFER:
             candle_buffer.pop(0)
         predictions = _run_prediction(candle_buffer)
@@ -323,22 +371,22 @@ async def ws_endpoint(ws: WebSocket):
     connected_clients.add(ws)
     print(f"[CLIENT] 연결 (총 {len(connected_clients)}개)")
 
-    # 신규 접속 시 최근 캔들 히스토리 즉시 전송 (차트 즉시 그리기)
-    if candle_buffer:
-        for c in candle_buffer[-30:]:
-            try:
-                await ws.send_text(json.dumps({
-                    "type": "real_time_candle",
-                    "candle": {
-                        "time":  c["time"],
-                        "open":  c["open"],
-                        "high":  c["high"],
-                        "low":   c["low"],
-                        "close": c["close"],
-                    },
-                }))
-            except Exception:
-                break
+    # 신규 접속 시 현재 시간대(1시간) 분봉 파일에서 과거 데이터 로드 후 전송
+    now_ts = int(datetime.now().timestamp())
+    hour_candles = _load_hour_candles(now_ts)
+    if hour_candles:
+        dt = datetime.fromtimestamp(now_ts)
+        period_start = int(datetime(dt.year, dt.month, dt.day, dt.hour, 0, 0).timestamp())
+        period_end = period_start + 3600  # 1시간
+        try:
+            await ws.send_text(json.dumps({
+                "type": "hour_history",
+                "candles": hour_candles,
+                "period_start": period_start,
+                "period_end": period_end,
+            }, ensure_ascii=False))
+        except Exception as e:
+            print(f"[CLIENT] hour_history 전송 실패: {e}")
 
     try:
         while True:
