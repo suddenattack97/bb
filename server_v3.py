@@ -1,7 +1,7 @@
 """
 BTC/USDT V3 방향성 예측 웹서버
 
-- Triple Barrier 분류 (tp/sl 0.25%, 클래스 균형 학습)
+- Triple Barrier 분류 (tp/sl 0.15%, 클래스 균형 학습)
 - tcn_v3_model.pth / scaler_v3.npy 사용
 - Port 8002 (V2와 병렬 실행 가능)
 

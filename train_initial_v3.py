@@ -123,8 +123,8 @@ class TripleBarrierDatasetV3(Dataset):
         csv_file: str,
         seq_len: int = 60,
         barrier_minutes: int = 5,
-        tp_pct: float = 0.0025,
-        sl_pct: float = 0.0025,
+        tp_pct: float = 0.0015,  # 0.15%: 수수료 근처, 타점 증가
+        sl_pct: float = 0.0015,
         use_heikin_ashi: bool = True,
         use_oi_funding: bool = False,
         oi_csv: str = None,
@@ -219,8 +219,8 @@ def train_v3(
     funding_csv: str = "BTC_funding_rate.csv",
     epochs: int = 5,
     barrier_minutes: int = 5,
-    tp_pct: float = 0.0025,
-    sl_pct: float = 0.0025,
+    tp_pct: float = 0.0015,  # 0.15%: 상승/하락 라벨 증가 (30~40% 목표)
+    sl_pct: float = 0.0015,
 ):
     from pathlib import Path
     if csv_file is None:
@@ -243,15 +243,18 @@ def train_v3(
     num_features = len(dataset.feature_names)
     labels = dataset.labels[dataset.seq_len : dataset.seq_len + dataset.valid_len]
 
-    # 클래스 가중치: 소수 클래스에 높은 가중치 (횡보만 찍기 방지)
+    # 클래스 가중치: 비율 역수 (희귀할수록 가중치↑ → 횡보만 찍기 방지)
+    # 예: 횡보 84%면 가중치 1.2, 상승 8%면 가중치 12.5
     unique, counts = np.unique(labels, return_counts=True)
     count_dict = dict(zip(unique, counts))
     total = len(labels)
     weights = np.ones(3)
     for c in range(3):
         n = count_dict.get(c, 1)
-        weights[c] = total / (3 * max(n, 1))  # 역빈도
+        p = n / max(total, 1)
+        weights[c] = 1.0 / max(p, 1e-6)  # 역비율 (교과서적 class weight)
     class_weights = torch.tensor(weights.astype(np.float32))
+    _log(f"  클래스 가중치 [하락/횡보/상승]: [{weights[0]:.2f}, {weights[1]:.2f}, {weights[2]:.2f}]")
 
     sampler = WeightedRandomSampler(
         weights=np.array([weights[y] for y in labels]),
