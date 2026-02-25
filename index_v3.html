@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>V3 방향성 예측</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Malgun Gothic', 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; display: flex; flex-direction: column; gap: 12px; padding: 14px 18px; }
+    #header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 18px; }
+    #header h1 { font-size: 1rem; font-weight: 600; color: #e6edf3; }
+    .meta-row { display: flex; flex-wrap: wrap; gap: 16px; font-size: 0.82rem; color: #8b949e; }
+    .meta-row span { white-space: nowrap; }
+    .meta-row strong { color: #c9d1d9; }
+    #ws-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #6e7681; margin-right: 4px; vertical-align: middle; transition: background 0.3s; }
+    #ws-dot.connected { background: #3fb950; box-shadow: 0 0 6px #3fb95088; }
+    #ws-dot.connecting { background: #d29922; }
+    #ws-dot.disconnected { background: #f85149; }
+    .btn-group { display: flex; gap: 8px; align-items: center; }
+    button { padding: 7px 14px; border: none; border-radius: 6px; font-size: 0.8rem; cursor: pointer; font-family: inherit; transition: opacity 0.15s; }
+    button:hover { opacity: 0.85; }
+    #btn-snapshot { background: #2962ff; color: #fff; }
+    #btn-reset { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+    .view-toggle { display: flex; border-radius: 6px; overflow: hidden; border: 1px solid #30363d; }
+    .view-toggle button { background: #21262d; color: #6e7681; border: none; border-radius: 0; padding: 6px 14px; font-size: 0.78rem; letter-spacing: 0.02em; }
+    .view-toggle button:hover { background: #2d333b; color: #c9d1d9; opacity: 1; }
+    .view-toggle button.active { background: #1f6feb; color: #fff; }
+    #chart-wrapper { position: relative; background: #131722; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; flex: 1; min-height: 460px; }
+    #chart-container { width: 100%; height: 100%; min-height: 460px; }
+    #chart-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(19,23,34,0.7); font-size: 1rem; color: #8b949e; pointer-events: none; transition: opacity 0.4s; }
+    #chart-overlay.hidden { opacity: 0; }
+    #stats-bar { display: flex; gap: 20px; flex-wrap: wrap; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 18px; font-size: 0.82rem; }
+    .stat-item { display: flex; flex-direction: column; gap: 2px; }
+    .stat-label { color: #8b949e; font-size: 0.73rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .stat-value { color: #e6edf3; font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .stat-value.up { color: #3fb950; }
+    .stat-value.down { color: #f85149; }
+    #stats-bar .btn-debug { margin-left: auto; font-size: 0.75rem; padding: 5px 10px; background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 6px; cursor: pointer; }
+    #stats-bar .btn-debug:hover { background: #2d333b; color: #c9d1d9; }
+    #gallery { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 18px; }
+    #gallery h3 { font-size: 0.85rem; color: #8b949e; margin-bottom: 10px; }
+    #snapshot-list { display: flex; gap: 10px; flex-wrap: wrap; }
+    .snap-thumb { position: relative; cursor: pointer; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; transition: border-color 0.15s; }
+    .snap-thumb:hover { border-color: #58a6ff; }
+    .snap-thumb img { display: block; width: 160px; height: 80px; object-fit: cover; }
+    .snap-thumb span { display: block; text-align: center; font-size: 0.65rem; color: #8b949e; padding: 3px 4px; background: #0d1117; }
+    #viewer-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 1000; align-items: center; justify-content: center; }
+    #viewer-overlay.visible { display: flex; }
+    #viewer-overlay img { max-width: 95vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 0 40px rgba(0,0,0,0.8); }
+    #viewer-close { position: absolute; top: 18px; right: 22px; color: #fff; font-size: 1.6rem; cursor: pointer; line-height: 1; }
+    #log-indicator { background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+    #log-indicator .log-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; background: #0d1117; cursor: pointer; font-size: 0.8rem; color: #8b949e; user-select: none; }
+    #log-indicator .log-header:hover { background: #161b22; color: #c9d1d9; }
+    #log-indicator .log-header .log-badge { background: #238636; color: #fff; font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; }
+    #log-indicator .log-body { display: none; max-height: 280px; overflow: auto; }
+    #log-indicator.expanded .log-body { display: block; }
+    #log-indicator .log-content { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.7rem; line-height: 1.4; padding: 10px 14px; color: #c9d1d9; white-space: pre-wrap; word-break: break-all; }
+    #log-indicator .log-actions { padding: 6px 14px; display: flex; gap: 8px; border-top: 1px solid #21262d; }
+    #log-indicator .log-actions button { font-size: 0.7rem; padding: 4px 10px; }
+  </style>
+</head>
+<body>
+<div id="header">
+  <div>
+    <h1>🎯 BTC V3 방향성 예측 (클래스 균형 + tp/sl 0.25%)</h1>
+    <div class="meta-row" style="margin-top:6px;">
+      <span><strong id="lbl-period">계산 중...</strong></span>
+      <span>현재: <strong id="lbl-time">--:--</strong></span>
+      <span><span id="ws-dot"></span><span id="lbl-ws">연결 중...</span></span>
+    </div>
+  </div>
+  <div class="btn-group">
+    <div class="view-toggle">
+      <button id="btn-view-candle" class="active">캔들</button>
+      <button id="btn-view-line">라인</button>
+    </div>
+    <button id="btn-snapshot">📷 수동 스냅샷</button>
+    <button id="btn-reset">🔄 차트 초기화</button>
+  </div>
+</div>
+<div id="chart-wrapper">
+  <div id="chart-container"></div>
+  <div id="chart-overlay">⏳ Binance WebSocket 연결 대기 중...</div>
+</div>
+<div id="stats-bar">
+  <div class="stat-item"><span class="stat-label">현재가</span><span class="stat-value" id="stat-price">--</span></div>
+  <div class="stat-item"><span class="stat-label">방향 예측</span><span class="stat-value" id="stat-direction">--</span></div>
+  <div class="stat-item"><span class="stat-label">확신도</span><span class="stat-value" id="stat-confidence">--</span></div>
+  <div class="stat-item"><span class="stat-label">누적 캔들</span><span class="stat-value" id="stat-candles">0</span></div>
+  <div class="stat-item"><span class="stat-label">예측 궤적</span><span class="stat-value" id="stat-preds">0</span></div>
+  <div class="stat-item"><span class="stat-label">구간 변화</span><span class="stat-value" id="stat-change">--</span></div>
+  <div class="stat-item"><span class="stat-label">다음 스냅샷까지</span><span class="stat-value" id="stat-countdown">--</span></div>
+  <div class="stat-item"><span class="stat-label">모델</span><span class="stat-value" id="stat-model">--</span></div>
+  <button id="btn-model-debug" class="btn-debug">🔍 예측 검증</button>
+</div>
+<div id="log-indicator">
+  <div class="log-header">
+    <span>📋 서버 로그 (data/logs/server_v3.txt)</span>
+    <span class="log-badge" id="log-badge">0 lines</span>
+  </div>
+  <div class="log-body">
+    <pre class="log-content" id="log-content">로딩 중...</pre>
+    <div class="log-actions">
+      <button id="btn-log-refresh" style="background:#238636;color:#fff;">새로고침</button>
+      <a id="btn-log-download" href="/api/logs/download" target="_blank" download="server_v3.txt" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px 10px;font-size:0.7rem;text-decoration:none;cursor:pointer;">다운로드 (.txt)</a>
+    </div>
+  </div>
+</div>
+<div id="gallery"><h3>📂 스냅샷 히스토리</h3><div id="snapshot-list"><span style="color:#6e7681;font-size:.8rem;">저장된 스냅샷이 없습니다.</span></div></div>
+<div id="viewer-overlay"><span id="viewer-close">✕</span><img id="viewer-img" src="" alt="snapshot" /></div>
+
+<script>
+const pad = n => String(n).padStart(2, '0');
+const fmt = n => n.toLocaleString('ko-KR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const TZ_OFFSET_S = new Date().getTimezoneOffset() * -60;
+function toChartTime(ms) { return Math.floor(ms / 1000) + TZ_OFFSET_S; }
+function dirLabel(d) { if (d === 2) return '▲ 상승'; if (d === 0) return '▼ 하락'; return '— 횡보'; }
+
+const chartContainer = document.getElementById('chart-container');
+const chart = LightweightCharts.createChart(chartContainer, {
+  layout: { background: { type: 'solid', color: '#131722' }, textColor: '#d1d4dc' },
+  grid: { vertLines: { color: '#1e2130' }, horzLines: { color: '#1e2130' } },
+  timeScale: { timeVisible: true, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true, borderColor: '#2b2b43' },
+  rightPriceScale: { autoScale: true, borderColor: '#2b2b43' },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  handleScroll: { mouseWheel: false, pressedMouseMove: false, horzTouchDrag: false },
+  handleScale: { mouseWheel: false, pinch: false, axisPressedMouseMove: false },
+});
+const resizeObserver = new ResizeObserver(() => { chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight }); });
+resizeObserver.observe(chartContainer);
+
+const candleSeries = chart.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
+const realAreaSeries = chart.addAreaSeries({ topColor: 'rgba(88, 166, 255, 0.18)', bottomColor: 'rgba(88, 166, 255, 0.0)', lineColor: '#58a6ff', lineWidth: 2, crosshairMarkerVisible: true, crosshairMarkerRadius: 4, lastValueVisible: true, priceLineVisible: true, priceLineColor: 'rgba(88,166,255,0.5)' });
+const anchorSeries = chart.addLineSeries({ color: 'rgba(0,0,0,0)', lineWidth: 0, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: () => null });
+
+let periodStart = null, periodEnd = null, periodIsPast = false, _rangeFixed = false;
+function calcPeriod(now) { const s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0); const e = new Date(s.getTime() + 3600 * 1000); return { start: s, end: e }; }
+function applyTimeAxisRange() {
+  if (!periodStart || !periodEnd) return;
+  const fromTs = toChartTime(periodStart.getTime());
+  const toTs = toChartTime(periodEnd.getTime());
+  const anchorVal = lastClose && lastClose > 0 ? lastClose : 50000;
+  const anchorData = [];
+  for (let t = fromTs; t <= toTs; t += 60) anchorData.push({ time: t, value: anchorVal });
+  anchorSeries.setData(anchorData);
+  try { chart.timeScale().setVisibleRange({ from: fromTs, to: toTs }); _rangeFixed = true; } catch (_) {}
+}
+function applyFixedTimeline(start, end) { document.getElementById('lbl-period').textContent = `현재 구간: ${pad(start.getHours())}:${pad(start.getMinutes())} ~ ${pad(end.getHours())}:${pad(end.getMinutes())}`; applyTimeAxisRange(); }
+
+let predictionSeriesList = [], lastPredictionEndTs = 0, candleCount = 0, lastCandleTs = 0, periodOpen = null, lastClose = null;
+let viewMode = 'candle', candleData = [], lineData = [];
+
+function switchView(mode) {
+  if (mode === viewMode) return;
+  viewMode = mode;
+  document.getElementById('btn-view-candle').classList.toggle('active', mode === 'candle');
+  document.getElementById('btn-view-line').classList.toggle('active', mode === 'line');
+  if (mode === 'line') { candleSeries.setData([]); realAreaSeries.setData(lineData); }
+  else { realAreaSeries.setData([]); candleSeries.setData(candleData); }
+  applyTimeAxisRange();
+}
+function resetChart() {
+  predictionSeriesList.forEach(s => { try { chart.removeSeries(s); } catch (_) {} });
+  predictionSeriesList = [];
+  lastPredictionEndTs = 0;
+  candleData = []; lineData = [];
+  candleSeries.setData([]); realAreaSeries.setData([]); anchorSeries.setData([]);
+  candleCount = 0; lastCandleTs = 0; periodOpen = null;
+  _rangeFixed = false;
+  document.getElementById('stat-candles').textContent = '0';
+  document.getElementById('stat-preds').textContent = '0';
+  document.getElementById('stat-direction').textContent = '--';
+  document.getElementById('stat-direction').className = 'stat-value';
+  document.getElementById('stat-confidence').textContent = '--';
+  document.getElementById('stat-change').textContent = '--';
+  document.getElementById('stat-change').className = 'stat-value';
+  periodIsPast = false;
+  const { start, end } = calcPeriod(new Date());
+  periodStart = start; periodEnd = end;
+  applyFixedTimeline(start, end);
+}
+resetChart();
+
+function makePeriodFilename(start, end) {
+  const dateStr = `${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}`;
+  const startStr = `${pad(start.getHours())}${pad(start.getMinutes())}`;
+  const endStr = `${pad(end.getHours())}${pad(end.getMinutes())}`;
+  return `${dateStr}_${startStr}_${endStr}.png`;
+}
+async function captureAndSend(filename) {
+  let dataURL = null;
+  try { const canvas = chart.takeScreenshot(); if (canvas && typeof canvas.toDataURL === 'function') dataURL = canvas.toDataURL('image/png'); } catch (_) {}
+  if (!dataURL) { const canvas = chartContainer.querySelector('canvas'); if (canvas) dataURL = canvas.toDataURL('image/png'); }
+  if (!dataURL) { console.warn('스냅샷 캔버스를 찾을 수 없습니다.'); return; }
+  try {
+    const res = await fetch('/save_snapshot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: dataURL, filename }) });
+    const json = await res.json();
+    console.log('📸 스냅샷 저장:', json.filename);
+    loadSnapshotGallery();
+  } catch (e) { console.error('스냅샷 전송 실패:', e); }
+}
+async function takeSnapshotAndReset() { await captureAndSend(makePeriodFilename(periodStart, periodEnd)); resetChart(); }
+
+document.getElementById('btn-snapshot').addEventListener('click', takeSnapshotAndReset);
+document.getElementById('btn-reset').addEventListener('click', resetChart);
+document.getElementById('btn-view-candle').addEventListener('click', () => switchView('candle'));
+document.getElementById('btn-view-line').addEventListener('click', () => switchView('line'));
+
+async function refreshModelStatus() {
+  try {
+    const res = await fetch('/status');
+    const d = await res.json();
+    document.getElementById('stat-model').textContent = d.model || '--';
+  } catch (_) {}
+}
+refreshModelStatus();
+setInterval(refreshModelStatus, 10000);
+
+document.getElementById('btn-model-debug').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/model_debug');
+    const d = await res.json();
+    let msg = `모델: ${d.model || 'unknown'}\n`;
+    if (d.model && (d.model === 'TCNClassifier' || d.model.startsWith('TCNClassifier'))) {
+      msg += `방향: ${dirLabel(d.direction)}\n`;
+      msg += `확률(하락/횡보/상승): [${(d.probs || []).map(x=>x.toFixed(3)).join(', ')}]`;
+    } else {
+      msg += (d.error || d.reason || '') + '';
+    }
+    alert(msg);
+  } catch (e) { alert('검증 API 오류: ' + e.message); }
+});
+
+async function loadSnapshotGallery() {
+  try {
+    const res = await fetch('/snapshots');
+    const data = await res.json();
+    const list = document.getElementById('snapshot-list');
+    if (!data.snapshots || data.snapshots.length === 0) {
+      list.innerHTML = '<span style="color:#6e7681;font-size:.8rem;">저장된 스냅샷이 없습니다.</span>';
+      return;
+    }
+    list.innerHTML = '';
+    data.snapshots.forEach(name => {
+      const thumb = document.createElement('div');
+      thumb.className = 'snap-thumb';
+      thumb.title = name;
+      thumb.innerHTML = `<img src="/snapshots/${name}" alt="${name}" loading="lazy"><span>${name.replace('.png','')}</span>`;
+      thumb.addEventListener('click', () => openViewer(`/snapshots/${name}`));
+      list.appendChild(thumb);
+    });
+  } catch (_) {}
+}
+function openViewer(src) { document.getElementById('viewer-img').src = src; document.getElementById('viewer-overlay').classList.add('visible'); }
+document.getElementById('viewer-close').addEventListener('click', () => document.getElementById('viewer-overlay').classList.remove('visible'));
+document.getElementById('viewer-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) e.currentTarget.classList.remove('visible'); });
+loadSnapshotGallery();
+
+async function loadLogs() {
+  try {
+    const res = await fetch('/api/logs?tail=500');
+    const d = await res.json();
+    document.getElementById('log-content').textContent = d.content || '(비어 있음)';
+    document.getElementById('log-badge').textContent = `${d.lines ?? 0} lines`;
+  } catch (e) { document.getElementById('log-content').textContent = `로드 실패: ${e.message}`; }
+}
+document.querySelector('#log-indicator .log-header').addEventListener('click', () => {
+  document.getElementById('log-indicator').classList.toggle('expanded');
+  if (document.getElementById('log-indicator').classList.contains('expanded')) loadLogs();
+});
+document.getElementById('btn-log-refresh').addEventListener('click', (e) => { e.preventDefault(); loadLogs(); });
+setInterval(() => { if (document.getElementById('log-indicator').classList.contains('expanded')) loadLogs(); }, 5000);
+
+function updateUI() {
+  const now = new Date();
+  document.getElementById('lbl-time').textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  if (periodEnd) {
+    const remainMs = periodEnd.getTime() - now.getTime();
+    document.getElementById('stat-countdown').textContent = remainMs > 0
+      ? `${pad(Math.floor(remainMs/60000))}:${pad(Math.floor((remainMs%60000)/1000))}`
+      : '00:00';
+  }
+}
+setInterval(updateUI, 1000);
+updateUI();
+
+let ws = null, wsRetryDelay = 2000, firstCandleReceived = false;
+function setWsStatus(status, text) { document.getElementById('ws-dot').className = status; document.getElementById('lbl-ws').textContent = text; }
+function connectWS() {
+  setWsStatus('connecting', '연결 중...');
+  const wsProto = (location.protocol === 'https:' ? 'wss:' : 'ws:');
+  ws = new WebSocket(`${wsProto}//${location.host}/ws`);
+  ws.onopen = () => { setWsStatus('connected', '연결됨 🟢'); wsRetryDelay = 2000; };
+  ws.onclose = () => {
+    setWsStatus('disconnected', `재연결 중... (${wsRetryDelay/1000}s)`);
+    setTimeout(connectWS, wsRetryDelay);
+    wsRetryDelay = Math.min(wsRetryDelay * 2, 30000);
+  };
+  ws.onerror = err => console.error('WebSocket 오류:', err);
+  ws.onmessage = (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch (_) { return; }
+    const now = new Date();
+    if (!firstCandleReceived) { firstCandleReceived = true; document.getElementById('chart-overlay').classList.add('hidden'); }
+    if (data.type === 'hour_history' && Array.isArray(data.candles)) {
+      const candles = data.candles;
+      const ps = data.period_start ? data.period_start * 1000 : null;
+      const pe = data.period_end ? data.period_end * 1000 : null;
+      periodIsPast = !!data.is_past;
+      if (ps && pe) { periodStart = new Date(ps); periodEnd = new Date(pe); applyFixedTimeline(periodStart, periodEnd); }
+      _rangeFixed = false;
+      candleData = []; lineData = [];
+      candleCount = 0;
+      periodOpen = candles.length ? candles[0].open : null;
+      lastClose = candles.length ? candles[candles.length - 1].close : null;
+      candles.forEach((c) => {
+        const ts = toChartTime((c.time || 0) * 1000);
+        candleData.push({ time: ts, open: c.open, high: c.high, low: c.low, close: c.close });
+        lineData.push({ time: ts, value: c.close });
+      });
+      candleCount = candleData.length;
+      lastCandleTs = candleData.length ? candleData[candleData.length - 1].time : 0;
+      if (viewMode === 'candle') { candleSeries.setData(candleData); realAreaSeries.setData([]); }
+      else { realAreaSeries.setData(lineData); candleSeries.setData([]); }
+      anchorSeries.setData([]);
+      applyTimeAxisRange();
+      document.getElementById('stat-candles').textContent = candleCount;
+      document.getElementById('stat-price').textContent = lastClose ? fmt(lastClose) : '--';
+      const change = periodOpen ? ((lastClose - periodOpen) / periodOpen * 100) : 0;
+      const el = document.getElementById('stat-change');
+      el.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(3)}%`;
+      el.className = `stat-value ${change >= 0 ? 'up' : 'down'}`;
+      return;
+    }
+    if (data.type === 'prediction_history' && Array.isArray(data.predictions)) {
+      const colors = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
+      data.predictions.forEach((entry, idx) => {
+        const preds = entry.predictions || [];
+        if (preds.length === 0) return;
+        const points = preds.map(p => ({ time: toChartTime((p.time || 0) * 1000), value: p.value, lower: p.lower, upper: p.upper }));
+        const originTime = toChartTime((entry.origin_time || 0) * 1000);
+        const lastCloseVal = entry.last_close;
+        const baseColor = colors[idx % colors.length];
+        const hasRange = points.some(p => p.lower != null && p.upper != null);
+        if (hasRange) {
+          const startVal = lastCloseVal ?? points[0]?.value ?? 0;
+          const upperSeries = chart.addLineSeries({ color: baseColor + '40', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+          const lowerSeries = chart.addLineSeries({ color: baseColor + '40', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+          upperSeries.setData([{ time: originTime, value: startVal }, ...points.map(p => ({ time: p.time, value: p.upper }))]);
+          lowerSeries.setData([{ time: originTime, value: startVal }, ...points.map(p => ({ time: p.time, value: p.lower }))]);
+          predictionSeriesList.push(upperSeries, lowerSeries);
+        }
+        const predSeries = chart.addLineSeries({ color: baseColor, lineWidth: 2.5, lineStyle: LightweightCharts.LineStyle.Dashed, crosshairMarkerVisible: true, lastValueVisible: true, priceLineVisible: false });
+        if (lastCloseVal != null && points.length > 0) predSeries.setData([{ time: originTime, value: lastCloseVal }, ...points.map(p => ({ time: p.time, value: p.value }))]);
+        else predSeries.setData(points.map(p => ({ time: p.time, value: p.value })));
+        predictionSeriesList.push(predSeries);
+        lastPredictionEndTs = points[points.length - 1].time;
+        const dir = entry.direction;
+        const conf = entry.confidence;
+        if (dir !== undefined) { document.getElementById('stat-direction').textContent = dirLabel(dir); document.getElementById('stat-direction').className = `stat-value ${dir === 2 ? 'up' : dir === 0 ? 'down' : ''}`; }
+        if (conf !== undefined) { document.getElementById('stat-confidence').textContent = `${(conf * 100).toFixed(1)}%`; }
+      });
+      document.getElementById('stat-preds').textContent = String(predictionSeriesList.length);
+      applyTimeAxisRange();
+    }
+    if (!periodIsPast && periodEnd && now >= periodEnd) { takeSnapshotAndReset(); return; }
+    if (data.type === 'real_time_candle') {
+      const c = data.candle;
+      const ts = toChartTime((c.time || 0) * 1000);
+      const chartCandle = { time: ts, open: c.open, high: c.high, low: c.low, close: c.close };
+      const chartLine = { time: ts, value: c.close };
+      let found = false;
+      for (let i = 0; i < candleData.length; i++) {
+        if (candleData[i].time === ts) { candleData[i] = chartCandle; lineData[i] = chartLine; found = true; break; }
+      }
+      if (!found) { candleData.push(chartCandle); lineData.push(chartLine); }
+      if (viewMode === 'candle') candleSeries.update(chartCandle);
+      else realAreaSeries.update(chartLine);
+      lastClose = c.close;
+      if (periodOpen === null) periodOpen = c.open;
+      if (ts !== lastCandleTs) { lastCandleTs = ts; candleCount = candleData.length; document.getElementById('stat-candles').textContent = candleCount; }
+      document.getElementById('stat-price').textContent = fmt(c.close);
+      const change = periodOpen ? ((c.close - periodOpen) / periodOpen * 100) : 0;
+      const el = document.getElementById('stat-change');
+      el.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(3)}%`;
+      el.className = `stat-value ${change >= 0 ? 'up' : 'down'}`;
+      applyTimeAxisRange();
+    }
+    if (data.type === 'prediction' && Array.isArray(data.predictions) && data.predictions.length > 0) {
+      const points = data.predictions.map(p => ({ time: toChartTime((p.time || 0) * 1000), value: p.value, lower: p.lower, upper: p.upper }));
+      const predEndTs = points[points.length - 1].time;
+      const canAdd = predictionSeriesList.length === 0 || lastCandleTs >= lastPredictionEndTs;
+      if (!canAdd) return;
+      const colors = ['#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
+      const baseColor = colors[predictionSeriesList.length % colors.length];
+      const originTime = data.origin_time ? toChartTime(data.origin_time * 1000) : points[0].time - 60;
+      const dir = data.predictions[0].direction;
+      const conf = data.predictions[0].confidence;
+      if (dir !== undefined) { document.getElementById('stat-direction').textContent = dirLabel(dir); document.getElementById('stat-direction').className = `stat-value ${dir === 2 ? 'up' : dir === 0 ? 'down' : ''}`; }
+      if (conf !== undefined) { document.getElementById('stat-confidence').textContent = `${(conf * 100).toFixed(1)}%`; }
+      const hasRange = points.some(p => p.lower != null && p.upper != null);
+      if (hasRange) {
+        const upperPoints = [{ time: originTime, value: lastClose }, ...points.map(p => ({ time: p.time, value: p.upper }))];
+        const lowerPoints = [{ time: originTime, value: lastClose }, ...points.map(p => ({ time: p.time, value: p.lower }))];
+        const upperSeries = chart.addLineSeries({ color: baseColor + '40', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+        const lowerSeries = chart.addLineSeries({ color: baseColor + '40', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false });
+        upperSeries.setData(upperPoints);
+        lowerSeries.setData(lowerPoints);
+        predictionSeriesList.push(upperSeries, lowerSeries);
+      }
+      const predSeries = chart.addLineSeries({ color: baseColor, lineWidth: 2.5, lineStyle: LightweightCharts.LineStyle.Dashed, crosshairMarkerVisible: true, lastValueVisible: true, priceLineVisible: false });
+      if (lastClose != null && points.length > 0) predSeries.setData([{ time: originTime, value: lastClose }, ...points.map(p => ({ time: p.time, value: p.value }))]);
+      else predSeries.setData(points.map(p => ({ time: p.time, value: p.value })));
+      predictionSeriesList.push(predSeries);
+      lastPredictionEndTs = predEndTs;
+      document.getElementById('stat-preds').textContent = String(Math.ceil(predictionSeriesList.length / (hasRange ? 3 : 1)));
+      applyTimeAxisRange();
+    }
+  };
+}
+connectWS();
+</script>
+</body>
+</html>
