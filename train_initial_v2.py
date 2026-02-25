@@ -231,10 +231,14 @@ class TripleBarrierDataset(Dataset):
         ]
         self.feature_names = [f for f in features if f in df.columns]
         raw = df[self.feature_names].values.astype(np.float32)
+        # NaN/Inf 제거 (모델 학습 폭발 방지)
+        raw = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
+        raw = np.clip(raw, -1e6, 1e6)
 
         self.mean = raw.mean(axis=0)
         self.std = raw.std(axis=0) + 1e-8
         self.data_norm = (raw - self.mean) / self.std
+        self.data_norm = np.nan_to_num(self.data_norm, nan=0.0, posinf=0.0, neginf=0.0)
         self.labels = df["label"].values.astype(np.int64)
 
         valid_end = len(df) - seq_len - barrier_minutes
@@ -289,7 +293,7 @@ def train_v2(
         batch_size=512,
         shuffle=True,
         num_workers=0,
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -302,23 +306,28 @@ def train_v2(
         total_loss = 0.0
         correct = 0
         total = 0
+        n_batches = 0
         for i, (x, y) in enumerate(train_loader):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             logits = model(x)
             loss = criterion(logits, y).mean()
+            if torch.isnan(loss) or torch.isinf(loss):
+                continue
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             total_loss += loss.item()
             correct += (logits.argmax(1) == y).sum().item()
             total += y.size(0)
+            n_batches += 1
 
             if i % 500 == 0:
                 _log(f"  Epoch [{epoch+1}/{epochs}] Step [{i}/{len(train_loader)}] "
                       f"Loss: {loss.item():.4f} Acc: {100*correct/max(1,total):.2f}%")
 
-        avg_loss = total_loss / len(train_loader)
-        acc = 100 * correct / total
+        avg_loss = total_loss / max(1, n_batches)
+        acc = 100 * correct / max(1, total)
         _log(f"✅ Epoch {epoch+1}/{epochs} 완료 — Loss: {avg_loss:.4f} Acc: {acc:.2f}%")
 
     torch.save(model.state_dict(), "tcn_v2_model.pth")
