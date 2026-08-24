@@ -624,6 +624,10 @@ async def download_logs():
 async def index():
     return FileResponse("index_v3.html")
 
+@app.get("/reels")
+async def reels_studio():
+    return FileResponse("reels.html")
+
 
 if __name__ == "__main__":
     import uvicorn
