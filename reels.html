@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>영상 스튜디오 · 릴스 / 피드</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --line: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #1f6feb;
+      --accent-2: #238636;
+      --danger: #f85149;
+      --radius: 10px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    button, input, textarea, select { font-family: inherit; }
+
+    /* ── Top bar ── */
+    #topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      padding: 12px 18px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+    #topbar h1 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+    }
+    #topbar h1 span { color: var(--muted); font-weight: 500; font-size: 0.78rem; margin-left: 8px; }
+
+    .format-toggle {
+      display: flex;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .format-toggle button {
+      background: #21262d;
+      color: var(--muted);
+      border: none;
+      padding: 8px 16px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 1px;
+      min-width: 148px;
+    }
+    .format-toggle button strong { color: inherit; font-size: 0.86rem; font-weight: 700; }
+    .format-toggle button em { font-style: normal; font-size: 0.68rem; opacity: 0.85; }
+    .format-toggle button:hover { background: #2d333b; color: var(--text); }
+    .format-toggle button.active { background: var(--accent); color: #fff; }
+    .format-toggle button.active strong,
+    .format-toggle button.active em { color: #fff; }
+
+    .top-actions { display: flex; gap: 8px; align-items: center; }
+    .btn {
+      border: none;
+      border-radius: 7px;
+      padding: 8px 14px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.88; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: var(--accent-2); color: #fff; }
+    .btn-ghost { background: #21262d; color: var(--text); border: 1px solid var(--line); }
+
+    /* ── Workspace ── */
+    #workspace {
+      flex: 1;
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) 340px;
+      min-height: 0;
+    }
+    @media (max-width: 960px) {
+      #workspace { grid-template-columns: 1fr; grid-template-rows: minmax(420px, 1fr) auto; }
+    }
+
+    /* ── Preview ── */
+    #preview-col {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: #0a0d12;
+      border-right: 1px solid var(--line);
+    }
+    #preview-stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      min-height: 0;
+    }
+    #preview-frame {
+      position: relative;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.55);
+      max-width: 100%;
+      max-height: 100%;
+      aspect-ratio: 1080 / 1920;
+      height: min(78vh, 100%);
+      width: auto;
+    }
+    #preview-frame.feed {
+      aspect-ratio: 1080 / 1350;
+    }
+    #stage {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    #preview-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.85rem;
+      pointer-events: none;
+      text-align: center;
+      padding: 20px;
+    }
+    #preview-empty.hidden { display: none; }
+    #preview-badge {
+      position: absolute;
+      top: 10px; left: 10px;
+      background: rgba(0,0,0,0.62);
+      color: #fff;
+      font-size: 0.68rem;
+      padding: 4px 8px;
+      border-radius: 999px;
+      letter-spacing: 0.02em;
+      pointer-events: none;
+    }
+
+    #transport {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 16px 14px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+    #btn-play {
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    #timeline {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      border-radius: 99px;
+      background: #21262d;
+      outline: none;
+    }
+    #timeline::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #58a6ff;
+      cursor: pointer;
+    }
+    #time-label {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.75rem;
+      color: var(--muted);
+      min-width: 92px;
+      text-align: right;
+    }
+
+    /* ── Side panel ── */
+    #side {
+      background: var(--panel);
+      overflow: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .block h2 {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    label.field { display: block; margin-bottom: 10px; }
+    label.field span {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid var(--line);
+      color: var(--text);
+      border-radius: 7px;
+      padding: 8px 10px;
+      font-size: 0.85rem;
+    }
+    textarea { resize: vertical; min-height: 64px; }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.82rem;
+      color: var(--text);
+    }
+    .hint {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.45;
+      margin-top: 6px;
+    }
+
+    .clip-list { display: flex; flex-direction: column; gap: 8px; }
+    .clip {
+      display: grid;
+      grid-template-columns: 64px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      background: #0d1117;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px;
+    }
+    .clip.selected { border-color: var(--accent); }
+    .clip img {
+      width: 64px; height: 40px;
+      object-fit: cover;
+      border-radius: 4px;
+      background: #000;
+    }
+    .clip .meta { min-width: 0; }
+    .clip .meta strong {
+      display: block;
+      font-size: 0.78rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .clip .meta em {
+      font-style: normal;
+      font-size: 0.68rem;
+      color: var(--muted);
+    }
+    .clip .clip-del {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 4px 6px;
+    }
+    .clip .clip-del:hover { color: var(--danger); }
+
+    #feed-only { display: none; }
+    #feed-only.visible { display: block; }
+
+    .thumb-picks {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+    .thumb-pick {
+      flex: 0 0 auto;
+      width: 92px;
+      border: 2px solid transparent;
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      background: #0d1117;
+    }
+    .thumb-pick.active { border-color: #58a6ff; }
+    .thumb-pick img { display: block; width: 92px; height: 58px; object-fit: cover; }
+    .thumb-pick span {
+      display: block;
+      font-size: 0.62rem;
+      color: var(--muted);
+      padding: 3px 5px;
+      text-align: center;
+    }
+
+    .preview-mode {
+      display: flex;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .preview-mode button {
+      flex: 1;
+      background: #21262d;
+      color: var(--muted);
+      border: none;
+      padding: 7px 8px;
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    .preview-mode button.active { background: #1f6feb; color: #fff; }
+
+    #export-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.72);
+      z-index: 50;
+      align-items: center;
+      justify-content: center;
+    }
+    #export-overlay.visible { display: flex; }
+    #export-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 22px 24px;
+      width: min(360px, 92vw);
+      text-align: center;
+    }
+    #export-card h3 { margin-bottom: 10px; font-size: 1rem; }
+    #export-bar {
+      height: 8px;
+      background: #21262d;
+      border-radius: 99px;
+      overflow: hidden;
+      margin: 12px 0 8px;
+    }
+    #export-bar > i {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: #3fb950;
+    }
+    #export-msg { font-size: 0.78rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header id="topbar">
+    <h1>영상 스튜디오<span>릴스 · 피드 내보내기</span></h1>
+    <div class="format-toggle" role="tablist" aria-label="해상도 형식">
+      <button type="button" id="fmt-reels" class="active" data-format="reels">
+        <strong>릴스용</strong>
+        <em>1080 × 1920</em>
+      </button>
+      <button type="button" id="fmt-feed" data-format="feed">
+        <strong>피드용</strong>
+        <em>1080 × 1350</em>
+      </button>
+    </div>
+    <div class="top-actions">
+      <button type="button" class="btn btn-ghost" id="btn-add">+ 컷 추가</button>
+      <button type="button" class="btn btn-primary" id="btn-export">내보내기</button>
+    </div>
+  </header>
+
+  <div id="workspace">
+    <section id="preview-col">
+      <div id="preview-stage">
+        <div id="preview-frame">
+          <canvas id="stage" width="1080" height="1920"></canvas>
+          <div id="preview-empty">컷을 추가하면 여기에 미리보기가 표시됩니다</div>
+          <div id="preview-badge">릴스 1080×1920</div>
+        </div>
+      </div>
+      <div id="transport">
+        <button type="button" id="btn-play" aria-label="재생">▶</button>
+        <input id="timeline" type="range" min="0" max="0" step="0.01" value="0" />
+        <div id="time-label">0:00.00 / 0:00.00</div>
+      </div>
+    </section>
+
+    <aside id="side">
+      <div class="block">
+        <h2>문구</h2>
+        <label class="field">
+          <span>타이틀</span>
+          <input id="inp-title" type="text" maxlength="80" value="오늘의 한 컷" />
+        </label>
+        <label class="field">
+          <span>서브문구</span>
+          <textarea id="inp-sub">더 알아보기</textarea>
+        </label>
+        <label class="check">
+          <input id="inp-grad" type="checkbox" checked />
+          하단 그라데이션
+        </label>
+        <p class="hint">릴스와 피드 미리보기 모두 같은 타이틀·서브문구·하단 그라데이션으로 보여 줍니다. 피드 내보내기에서만 영상 쪽 오버레이가 워터마크로 바뀝니다.</p>
+      </div>
+
+      <div class="block" id="feed-only">
+        <h2>피드 전용</h2>
+        <p class="hint" style="margin-top:0">썸네일은 타이틀·서브문구·하단 그라데이션을 유지한 한 장을 뽑고, 영상은 그 오버레이를 걷어 낸 뒤 서브문구를 반투명 워터마크로 초 단위로 옮깁니다.</p>
+        <label class="field" style="margin-top:10px">
+          <span>썸네일로 쓸 컷</span>
+          <div class="thumb-picks" id="thumb-picks"></div>
+        </label>
+        <label class="field">
+          <span>썸네일 프레임 <em id="thumb-time-label" style="font-style:normal;color:#8b949e"></em></span>
+          <input id="thumb-time" type="range" min="0" max="0" step="0.05" value="0" />
+        </label>
+        <div class="preview-mode">
+          <button type="button" id="mode-edit" class="active">편집 미리보기</button>
+          <button type="button" id="mode-wm">워터마크 영상</button>
+        </div>
+      </div>
+
+      <div class="block">
+        <h2>컷 목록</h2>
+        <div class="clip-list" id="clip-list">
+          <p class="hint">영상을 여러 개 넣으면 순서대로 이어집니다.</p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <input id="file-input" type="file" accept="video/*" multiple hidden />
+
+  <div id="export-overlay">
+    <div id="export-card">
+      <h3>내보내는 중</h3>
+      <div id="export-bar"><i></i></div>
+      <p id="export-msg">준비 중…</p>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const FORMATS = {
+    reels: { id: 'reels', w: 1080, h: 1920, label: '릴스 1080×1920' },
+    feed:  { id: 'feed',  w: 1080, h: 1350, label: '피드 1080×1350' },
+  };
+  const WM_POS = ['tl', 'tr', 'center', 'bl', 'br'];
+
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const frameEl = document.getElementById('preview-frame');
+  const emptyEl = document.getElementById('preview-empty');
+  const badgeEl = document.getElementById('preview-badge');
+  const timeline = document.getElementById('timeline');
+  const timeLabel = document.getElementById('time-label');
+  const playBtn = document.getElementById('btn-play');
+  const clipListEl = document.getElementById('clip-list');
+  const thumbPicksEl = document.getElementById('thumb-picks');
+  const thumbTimeEl = document.getElementById('thumb-time');
+  const thumbTimeLabel = document.getElementById('thumb-time-label');
+  const fileInput = document.getElementById('file-input');
+
+  const state = {
+    format: 'reels',
+    title: document.getElementById('inp-title').value,
+    subtitle: document.getElementById('inp-sub').value,
+    gradient: true,
+    clips: [],
+    thumbClipId: null,
+    thumbTime: 0,
+    playing: false,
+    playhead: 0,
+    overlayMode: 'edit', // edit = 릴스형 타이틀, watermark = 피드 영상
+    exporting: false,
+    lastTs: 0,
+    activeVideo: null,
+  };
+
+  function fmt(t) {
+    t = Math.max(0, t || 0);
+    const m = Math.floor(t / 60);
+    const s = t % 60;
+    return `${m}:${s.toFixed(2).padStart(5, '0')}`;
+  }
+
+  function totalDuration() {
+    return state.clips.reduce((s, c) => s + c.duration, 0);
+  }
+
+  function clipAt(t) {
+    let acc = 0;
+    for (const clip of state.clips) {
+      if (t < acc + clip.duration) return { clip, local: Math.max(0, t - acc), start: acc };
+      acc += clip.duration;
+    }
+    const last = state.clips[state.clips.length - 1];
+    if (!last) return null;
+    return { clip: last, local: last.duration, start: acc - last.duration };
+  }
+
+  function wmIndex(t) {
+    const seq = [0, 1, 2, 3, 4, 3, 2, 1];
+    return seq[Math.floor(Math.max(0, t)) % seq.length];
+  }
+
+  function drawCover(target, video, w, h) {
+    const vw = video.videoWidth || w;
+    const vh = video.videoHeight || h;
+    if (!vw || !vh) {
+      target.fillStyle = '#000';
+      target.fillRect(0, 0, w, h);
+      return;
+    }
+    const scale = Math.max(w / vw, h / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    target.drawImage(video, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+
+  function wrapText(target, text, maxWidth) {
+    const src = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!src) return [];
+    const chars = [...src];
+    const lines = [];
+    let line = '';
+    for (const ch of chars) {
+      const test = line + ch;
+      if (target.measureText(test).width > maxWidth && line) {
+        lines.push(line);
+        line = ch;
+      } else line = test;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawBottomGradient(target, w, h, alpha) {
+    const gh = h * 0.4;
+    const g = target.createLinearGradient(0, h - gh, 0, h);
+    g.addColorStop(0, `rgba(0,0,0,0)`);
+    g.addColorStop(0.4, `rgba(0,0,0,${0.42 * alpha})`);
+    g.addColorStop(1, `rgba(0,0,0,${0.86 * alpha})`);
+    target.fillStyle = g;
+    target.fillRect(0, h - gh, w, gh);
+  }
+
+  function drawTopGradient(target, w, h, alpha) {
+    const gh = h * 0.32;
+    const g = target.createLinearGradient(0, 0, 0, gh);
+    g.addColorStop(0, `rgba(0,0,0,${0.86 * alpha})`);
+    g.addColorStop(0.55, `rgba(0,0,0,${0.42 * alpha})`);
+    g.addColorStop(1, `rgba(0,0,0,0)`);
+    target.fillStyle = g;
+    target.fillRect(0, 0, w, gh);
+  }
+
+  function drawCenterGradient(target, w, h, alpha) {
+    const gh = h * 0.28;
+    const y = (h - gh) / 2;
+    const g = target.createLinearGradient(0, y, 0, y + gh);
+    g.addColorStop(0, `rgba(0,0,0,0)`);
+    g.addColorStop(0.5, `rgba(0,0,0,${0.62 * alpha})`);
+    g.addColorStop(1, `rgba(0,0,0,0)`);
+    target.fillStyle = g;
+    target.fillRect(0, y, w, gh);
+  }
+
+  function drawTitleOverlay(target, w, h, title, subtitle, withGrad) {
+    if (withGrad) drawBottomGradient(target, w, h, 1);
+    const pad = w * 0.07;
+    const maxW = w - pad * 2;
+    const titleSize = Math.round(w * 0.074);
+    const subSize = Math.round(w * 0.036);
+    target.save();
+    target.textBaseline = 'alphabetic';
+    target.shadowColor = 'rgba(0,0,0,0.55)';
+    target.shadowBlur = 10;
+    target.fillStyle = '#fff';
+    target.textAlign = 'left';
+    target.font = `900 ${titleSize}px "Black Han Sans", "Noto Sans KR", sans-serif`;
+    const titleLines = wrapText(target, title, maxW).slice(0, 3);
+    target.font = `600 ${subSize}px "Noto Sans KR", sans-serif`;
+    const subLines = wrapText(target, subtitle, maxW).slice(0, 3);
+    const lineGapT = titleSize * 1.12;
+    const lineGapS = subSize * 1.28;
+    const blockH = titleLines.length * lineGapT + (subLines.length ? 14 + subLines.length * lineGapS : 0);
+    let y = h - w * 0.08 - (subLines.length ? subLines.length * lineGapS : 0);
+    target.font = `600 ${subSize}px "Noto Sans KR", sans-serif`;
+    target.fillStyle = 'rgba(255,255,255,0.9)';
+    subLines.slice().reverse().forEach((line, i) => {
+      target.fillText(line, pad, y - i * lineGapS);
+    });
+    y = h - w * 0.08 - (subLines.length ? subLines.length * lineGapS + 16 : 0);
+    target.font = `900 ${titleSize}px "Black Han Sans", "Noto Sans KR", sans-serif`;
+    target.fillStyle = '#fff';
+    titleLines.slice().reverse().forEach((line, i) => {
+      target.fillText(line, pad, y - i * lineGapT);
+    });
+    target.restore();
+    return blockH;
+  }
+
+  function drawWatermark(target, w, h, subtitle, t) {
+    const pos = WM_POS[wmIndex(t)];
+    const alpha = 0.48;
+    if (pos === 'tl' || pos === 'tr') drawTopGradient(target, w, h, alpha);
+    else if (pos === 'center') drawCenterGradient(target, w, h, alpha);
+    else drawBottomGradient(target, w, h, alpha);
+
+    const pad = w * 0.055;
+    const fontSize = Math.round(w * 0.034);
+    target.save();
+    target.font = `600 ${fontSize}px "Noto Sans KR", sans-serif`;
+    target.fillStyle = `rgba(255,255,255,${0.72})`;
+    target.shadowColor = 'rgba(0,0,0,0.45)';
+    target.shadowBlur = 8;
+    const maxW = w * 0.62;
+    const lines = wrapText(target, subtitle, maxW).slice(0, 3);
+    if (!lines.length) {
+      target.restore();
+      return;
+    }
+    const lineH = fontSize * 1.3;
+    const blockH = lines.length * lineH;
+    let x = pad;
+    let align = 'left';
+    if (pos === 'tr' || pos === 'br') { x = w - pad; align = 'right'; }
+    if (pos === 'center') { x = w / 2; align = 'center'; }
+    target.textAlign = align;
+    target.textBaseline = 'top';
+    let y;
+    if (pos === 'tl' || pos === 'tr') y = pad;
+    else if (pos === 'center') y = (h - blockH) / 2;
+    else y = h - pad - blockH;
+    lines.forEach((line, i) => target.fillText(line, x, y + i * lineH));
+    target.restore();
+  }
+
+  function currentOverlayMode() {
+    if (state.format === 'feed' && state.overlayMode === 'watermark') return 'watermark';
+    return 'title';
+  }
+
+  function paint(atTime, mode) {
+    const fmtDef = FORMATS[state.format];
+    const w = fmtDef.w;
+    const h = fmtDef.h;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+
+    const hit = clipAt(atTime);
+    if (hit && hit.clip.video && hit.clip.video.readyState >= 2) {
+      drawCover(ctx, hit.clip.video, w, h);
+      emptyEl.classList.add('hidden');
+    } else if (!state.clips.length) {
+      emptyEl.classList.remove('hidden');
+    }
+
+    if (mode === 'watermark') {
+      drawWatermark(ctx, w, h, state.subtitle, atTime);
+    } else {
+      drawTitleOverlay(ctx, w, h, state.title, state.subtitle, state.gradient);
+    }
+  }
+
+  async function syncVideo(t, shouldPlay) {
+    const hit = clipAt(t);
+    if (!hit) return;
+    for (const c of state.clips) {
+      if (c !== hit.clip && !c.video.paused) c.video.pause();
+    }
+    const v = hit.clip.video;
+    if (Math.abs((v.currentTime || 0) - hit.local) > 0.08) {
+      try { v.currentTime = Math.min(hit.local, Math.max(0, hit.clip.duration - 0.04)); } catch (_) {}
+    }
+    if (shouldPlay) {
+      if (v.paused) {
+        try { await v.play(); } catch (_) {}
+      }
+    } else if (!v.paused) {
+      v.pause();
+    }
+    state.activeVideo = v;
+  }
+
+  function renderLoop(ts) {
+    if (state.exporting) {
+      requestAnimationFrame(renderLoop);
+      return;
+    }
+    if (state.playing) {
+      const dt = state.lastTs ? (ts - state.lastTs) / 1000 : 0;
+      state.lastTs = ts;
+      const dur = totalDuration();
+      state.playhead = Math.min(dur, state.playhead + dt);
+      if (state.playhead >= dur && dur > 0) {
+        state.playing = false;
+        state.playhead = dur;
+        playBtn.textContent = '▶';
+        state.clips.forEach(c => c.video.pause());
+      } else {
+        syncVideo(state.playhead, true);
+      }
+      timeline.value = String(state.playhead);
+    } else {
+      state.lastTs = ts;
+    }
+    paint(state.playhead, currentOverlayMode());
+    timeLabel.textContent = `${fmt(state.playhead)} / ${fmt(totalDuration())}`;
+    requestAnimationFrame(renderLoop);
+  }
+
+  function applyFormat(id) {
+    state.format = id;
+    document.querySelectorAll('.format-toggle button').forEach(b => {
+      b.classList.toggle('active', b.dataset.format === id);
+    });
+    frameEl.classList.toggle('feed', id === 'feed');
+    badgeEl.textContent = FORMATS[id].label;
+    document.getElementById('feed-only').classList.toggle('visible', id === 'feed');
+    if (id !== 'feed') state.overlayMode = 'edit';
+    document.getElementById('mode-edit').classList.toggle('active', state.overlayMode === 'edit');
+    document.getElementById('mode-wm').classList.toggle('active', state.overlayMode === 'watermark');
+    paint(state.playhead, currentOverlayMode());
+  }
+
+  function captureThumb(video, t) {
+    const c = document.createElement('canvas');
+    c.width = 184; c.height = 116;
+    const x = c.getContext('2d');
+    const snap = () => {
+      try { drawCover(x, video, c.width, c.height); } catch (_) {}
+      return c.toDataURL('image/jpeg', 0.72);
+    };
+    return new Promise((resolve) => {
+      const done = () => resolve(snap());
+      if (Math.abs(video.currentTime - t) < 0.05 && video.readyState >= 2) return done();
+      const onSeek = () => { video.removeEventListener('seeked', onSeek); done(); };
+      video.addEventListener('seeked', onSeek);
+      try { video.currentTime = t; } catch (_) { done(); }
+    });
+  }
+
+  function renderClipList() {
+    if (!state.clips.length) {
+      clipListEl.innerHTML = '<p class="hint">영상을 여러 개 넣으면 순서대로 이어집니다.</p>';
+      thumbPicksEl.innerHTML = '<p class="hint">컷을 추가하세요</p>';
+      return;
+    }
+    clipListEl.innerHTML = '';
+    state.clips.forEach((clip, i) => {
+      const el = document.createElement('div');
+      el.className = 'clip' + (clip.id === state.thumbClipId ? ' selected' : '');
+      el.innerHTML = `
+        <img alt="" src="${clip.poster || ''}" />
+        <div class="meta">
+          <strong>컷 ${i + 1} · ${clip.name}</strong>
+          <em>${fmt(clip.duration)}</em>
+        </div>
+        <button type="button" class="clip-del" data-id="${clip.id}">삭제</button>`;
+      clipListEl.appendChild(el);
+    });
+    thumbPicksEl.innerHTML = '';
+    state.clips.forEach((clip, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'thumb-pick' + (clip.id === state.thumbClipId ? ' active' : '');
+      b.innerHTML = `<img alt="" src="${clip.poster || ''}" /><span>컷 ${i + 1}</span>`;
+      b.addEventListener('click', () => selectThumbClip(clip.id));
+      thumbPicksEl.appendChild(b);
+    });
+    const selected = state.clips.find(c => c.id === state.thumbClipId) || state.clips[0];
+    if (selected) {
+      thumbTimeEl.max = String(Math.max(0, selected.duration - 0.05));
+      thumbTimeEl.value = String(Math.min(state.thumbTime, selected.duration));
+      thumbTimeLabel.textContent = fmt(state.thumbTime);
+    }
+  }
+
+  function selectThumbClip(id) {
+    state.thumbClipId = id;
+    state.thumbTime = 0;
+    renderClipList();
+    const clip = state.clips.find(c => c.id === id);
+    if (clip) {
+      const start = state.clips.slice(0, state.clips.indexOf(clip)).reduce((s, c) => s + c.duration, 0);
+      state.playhead = start;
+      timeline.value = String(start);
+      syncVideo(start, false);
+    }
+  }
+
+  async function addFiles(files) {
+    for (const file of files) {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.src = url;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = 'auto';
+      await new Promise((resolve, reject) => {
+        video.onloadedmetadata = resolve;
+        video.onerror = () => reject(new Error('영상을 열 수 없습니다: ' + file.name));
+      });
+      const duration = video.duration || 0;
+      const id = 'c' + Math.random().toString(36).slice(2, 9);
+      const poster = await captureThumb(video, Math.min(0.2, duration / 2));
+      state.clips.push({ id, name: file.name, url, video, duration, poster, file });
+      if (!state.thumbClipId) state.thumbClipId = id;
+    }
+    timeline.max = String(totalDuration());
+    renderClipList();
+    paint(state.playhead, currentOverlayMode());
+  }
+
+  function removeClip(id) {
+    const idx = state.clips.findIndex(c => c.id === id);
+    if (idx < 0) return;
+    const [clip] = state.clips.splice(idx, 1);
+    clip.video.pause();
+    URL.revokeObjectURL(clip.url);
+    if (state.thumbClipId === id) state.thumbClipId = state.clips[0] ? state.clips[0].id : null;
+    state.playhead = Math.min(state.playhead, totalDuration());
+    timeline.max = String(totalDuration());
+    renderClipList();
+  }
+
+  function pickMime() {
+    const types = [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ];
+    return types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  function downloadBlob(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+
+  function showExport(on) {
+    document.getElementById('export-overlay').classList.toggle('visible', on);
+  }
+  function setExport(p, msg) {
+    document.querySelector('#export-bar > i').style.width = Math.round(p * 100) + '%';
+    document.getElementById('export-msg').textContent = msg;
+  }
+
+  async function grabThumbnail() {
+    const clip = state.clips.find(c => c.id === state.thumbClipId) || state.clips[0];
+    if (!clip) throw new Error('컷이 없습니다');
+    const off = document.createElement('canvas');
+    const fmtDef = FORMATS.feed;
+    off.width = fmtDef.w;
+    off.height = fmtDef.h;
+    const ox = off.getContext('2d', { alpha: false });
+    const v = clip.video;
+    v.pause();
+    await new Promise((resolve) => {
+      const go = () => resolve();
+      if (Math.abs(v.currentTime - state.thumbTime) < 0.04 && v.readyState >= 2) return go();
+      v.addEventListener('seeked', go, { once: true });
+      try { v.currentTime = Math.min(state.thumbTime, Math.max(0, clip.duration - 0.05)); } catch (_) { go(); }
+    });
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    ox.fillStyle = '#000';
+    ox.fillRect(0, 0, off.width, off.height);
+    drawCover(ox, v, off.width, off.height);
+    drawTitleOverlay(ox, off.width, off.height, state.title, state.subtitle, state.gradient);
+    return await new Promise((resolve) => off.toBlob(b => resolve(b), 'image/png'));
+  }
+
+  async function recordVideo(mode, filename) {
+    const dur = totalDuration();
+    const mime = pickMime();
+    const stream = canvas.captureStream(30);
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 12_000_000 } : { videoBitsPerSecond: 12_000_000 });
+    const chunks = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise(resolve => { rec.onstop = resolve; rec.onerror = resolve; });
+
+    state.exporting = true;
+    state.playing = false;
+    state.playhead = 0;
+    state.clips.forEach(c => { c.video.pause(); c.video.muted = true; });
+    await syncVideo(0, false);
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    rec.start(200);
+    const start = performance.now();
+    await new Promise((resolve) => {
+      const tick = async (now) => {
+        const t = Math.min(dur, (now - start) / 1000);
+        state.playhead = t;
+        await syncVideo(t, true);
+        paint(t, mode);
+        setExport(0.08 + 0.84 * (t / Math.max(dur, 0.001)), filename + ' 렌더 중…');
+        if (t >= dur) return resolve();
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    await new Promise(r => setTimeout(r, 120));
+    rec.stop();
+    await stopped;
+    stream.getTracks().forEach(t => t.stop());
+    state.exporting = false;
+    state.clips.forEach(c => { c.video.pause(); c.video.muted = true; });
+    const ext = (mime.includes('mp4') ? 'mp4' : 'webm');
+    const blob = new Blob(chunks, { type: mime || 'video/webm' });
+    downloadBlob(blob, filename.replace(/\.(mp4|webm)$/i, '') + '.' + ext);
+    return blob;
+  }
+
+  async function exportAll() {
+    if (!state.clips.length) { alert('먼저 컷을 추가하세요.'); return; }
+    await document.fonts.ready;
+    showExport(true);
+    const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g, '-');
+    try {
+      if (state.format === 'reels') {
+        setExport(0.05, '릴스 영상 준비…');
+        await recordVideo('title', `reels_${stamp}`);
+      } else {
+        setExport(0.04, '피드 썸네일 캡처…');
+        const png = await grabThumbnail();
+        downloadBlob(png, `feed_thumbnail_${stamp}.png`);
+        setExport(0.12, '피드 영상(워터마크) 준비…');
+        await recordVideo('watermark', `feed_video_${stamp}`);
+      }
+      setExport(1, '완료');
+      await new Promise(r => setTimeout(r, 400));
+    } catch (err) {
+      console.error(err);
+      alert('내보내기에 실패했습니다: ' + (err && err.message ? err.message : err));
+    } finally {
+      showExport(false);
+      state.exporting = false;
+      state.playing = false;
+      playBtn.textContent = '▶';
+      paint(state.playhead, currentOverlayMode());
+    }
+  }
+
+  document.querySelectorAll('.format-toggle button').forEach(btn => {
+    btn.addEventListener('click', () => applyFormat(btn.dataset.format));
+  });
+  document.getElementById('inp-title').addEventListener('input', e => { state.title = e.target.value; });
+  document.getElementById('inp-sub').addEventListener('input', e => { state.subtitle = e.target.value; });
+  document.getElementById('inp-grad').addEventListener('change', e => { state.gradient = e.target.checked; });
+  document.getElementById('btn-add').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (files.length) await addFiles(files);
+  });
+  clipListEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.clip-del');
+    if (btn) removeClip(btn.dataset.id);
+  });
+  playBtn.addEventListener('click', async () => {
+    if (!state.clips.length) return;
+    if (state.playhead >= totalDuration() - 0.02) state.playhead = 0;
+    state.playing = !state.playing;
+    state.lastTs = 0;
+    playBtn.textContent = state.playing ? '❚❚' : '▶';
+    if (!state.playing) state.clips.forEach(c => c.video.pause());
+    else await syncVideo(state.playhead, true);
+  });
+  timeline.addEventListener('input', () => {
+    state.playhead = Number(timeline.value);
+    state.playing = false;
+    playBtn.textContent = '▶';
+    state.clips.forEach(c => c.video.pause());
+    syncVideo(state.playhead, false);
+  });
+  thumbTimeEl.addEventListener('input', () => {
+    state.thumbTime = Number(thumbTimeEl.value);
+    thumbTimeLabel.textContent = fmt(state.thumbTime);
+    const clip = state.clips.find(c => c.id === state.thumbClipId);
+    if (!clip) return;
+    const start = state.clips.slice(0, state.clips.indexOf(clip)).reduce((s, c) => s + c.duration, 0);
+    state.playhead = start + state.thumbTime;
+    timeline.value = String(state.playhead);
+    syncVideo(state.playhead, false);
+  });
+  document.getElementById('mode-edit').addEventListener('click', () => {
+    state.overlayMode = 'edit';
+    document.getElementById('mode-edit').classList.add('active');
+    document.getElementById('mode-wm').classList.remove('active');
+  });
+  document.getElementById('mode-wm').addEventListener('click', () => {
+    state.overlayMode = 'watermark';
+    document.getElementById('mode-wm').classList.add('active');
+    document.getElementById('mode-edit').classList.remove('active');
+  });
+  document.getElementById('btn-export').addEventListener('click', exportAll);
+
+  applyFormat('reels');
+  requestAnimationFrame(renderLoop);
+})();
+</script>
+</body>
+</html>
